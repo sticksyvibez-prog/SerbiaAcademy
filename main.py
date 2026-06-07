@@ -18,8 +18,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-STAFF_ROLE_NAME = "Staff"          # Role required for admin commands
-LOG_CHANNEL_NAME = "bot-logs"      # Channel where actions are logged
+STAFF_ROLE_ID = 1500972974155632762  # Role ID required for admin commands
+LOG_CHANNEL_NAME = "bot-logs"        # Channel where actions are logged
 
 # ── Database initialisation ───────────────────────────────────────────────────
 DB_PATH = "norse_academy.db"
@@ -80,8 +80,8 @@ def generate_training_id(length: int = 8) -> str:
 
 
 def is_staff(member: discord.Member) -> bool:
-    """Return True if the member holds the Staff role."""
-    return any(role.name == STAFF_ROLE_NAME for role in member.roles)
+    """Return True if the member holds the staff role (checked by role ID)."""
+    return any(role.id == STAFF_ROLE_ID for role in member.roles)
 
 
 async def send_log(guild: discord.Guild, message: str) -> None:
