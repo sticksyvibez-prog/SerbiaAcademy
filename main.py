@@ -20,7 +20,7 @@ INFO = "<:informationnorse:1512836210295312474>"
 TICK = "<:tick:1512838490054725742>"
 ACTION = "<:actionnorse:1512836253488255146>"
 ROBLOX = "<:robloxnorse:1512836297402880150>"
-LOGO = "<:logonorse:1513074203291811980>" 
+LOGO = "<:logonorse:1513074203291811980>"
 
 intents = discord.Intents.default()
 intents.members = True
