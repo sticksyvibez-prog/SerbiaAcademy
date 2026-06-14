@@ -39,6 +39,7 @@ HEALTH_SAFETY_ROLE_ID = 1512023301432541293
 
 REGISTRATION_REVIEW_CHANNEL_ID = 1515685364860325999
 LOG_CHANNEL_ID = 1515686645477937272
+GUILD_ID = 1512023301420224673
 
 AIR_SERBIA_TAIL = "<:airserbiatail:1513465478918438942>"
 AIR_SERBIA_LOGO = "<:airserbialogo:1513461621417054300>"
@@ -607,11 +608,20 @@ async def on_ready():
     app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
     app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
 ])
-async def register(
-    interaction: discord.Interaction,
-    roblox_username: str,
-    roblox_id: str,
-    department: app_commands.Choice[str]
+@bot.event
+async def on_ready():
+    bot.add_view(RegistrationView())
+
+    guild = discord.Object(id=GUILD_ID)
+
+    try:
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"Synced {len(synced)} command(s) to Air Serbia server.")
+    except Exception as e:
+        print(f"Command sync failed: {e}")
+
+    print(f"Logged in as {bot.user}")
 ):
     if not isinstance(interaction.user, discord.Member):
         await send_error(interaction, "Server Only", "This command can only be used inside the server.")
@@ -1246,6 +1256,8 @@ Please await further instructions from an **Institute Officer**.
     )
 
     await send_success(interaction, "Training Cancelled", "The training cancellation has been posted.")
+
+    
     @bot.tree.command(name="deleteregistration", description="Delete a trainee registration record.")
 async def deleteregistration(
     interaction: discord.Interaction,
