@@ -40,7 +40,6 @@ HEALTH_SAFETY_ROLE_ID = 1512023301432541293
 REGISTRATION_REVIEW_CHANNEL_ID = 1515685364860325999
 LOG_CHANNEL_ID = 1515686645477937272
 
-# Emoji constants
 AIR_SERBIA_TAIL = "<:airserbiatail:1513465478918438942>"
 AIR_SERBIA_LOGO = "<:airserbialogo:1513461621417054300>"
 
@@ -211,10 +210,6 @@ def roblox_profile_url(roblox_id: str) -> str:
 
 
 async def get_roblox_headshot_url(roblox_id: str) -> str:
-    """
-    Uses Roblox's official thumbnail API and returns a direct image URL.
-    Falls back to Roblox's old thumbnail endpoint if the API fails.
-    """
     fallback = f"https://www.roblox.com/headshot-thumbnail/image?userId={roblox_id}&width=420&height=420&format=png"
 
     try:
@@ -273,6 +268,10 @@ async def send_success(interaction: discord.Interaction, title: str, description
     embed = base_embed(f"{I3} {title}", description)
     await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
+
+# ============================================================
+# EMBED TEMPLATES
+# ============================================================
 
 def registration_welcome_embed() -> discord.Embed:
     description = f"""> {I13} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲**
@@ -776,7 +775,7 @@ async def profile(interaction: discord.Interaction):
 
 {AIR_SERBIA_TAIL} We wish you the best of luck!
 
--# [Profile Link]({roblox_profile_url(roblox_id)})
+[Profile Link]({roblox_profile_url(roblox_id)})
 """
     )
     embed.set_author(
@@ -815,11 +814,12 @@ async def scheduletraining(
         return
 
     game_link = ensure_url(game_link)
+
     department_role_id = DEPARTMENT_ROLES[department.value]
     department_role = interaction.guild.get_role(department_role_id)
 
     if not department_role:
-        await send_error(interaction, "Role Not Found", "The department role could not be found.")
+        await send_error(interaction, "Role Not Found", "The selected department role could not be found.")
         return
 
     training_id = make_training_id()
@@ -868,8 +868,8 @@ async def scheduletraining(
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
 
-await sent.add_reaction(discord.PartialEmoji.from_str(I15))
-await sent.add_reaction(discord.PartialEmoji.from_str(I14))
+    await sent.add_reaction(discord.PartialEmoji.from_str(I15))
+    await sent.add_reaction(discord.PartialEmoji.from_str(I14))
 
     dm_embed = base_embed(
         "Training Successfully Scheduled",
@@ -889,7 +889,12 @@ await sent.add_reaction(discord.PartialEmoji.from_str(I14))
     await send_log(
         interaction.guild,
         "Training Scheduled",
-        f"Training ID: `{training_id}`\nCourse: {course}\nPhase: {phase}\nDepartment: {department.value}\nScheduled By: {interaction.user}\nChannel: #{channel.name}"
+        f"Training ID: `{training_id}`\n"
+        f"Course: {course}\n"
+        f"Phase: {phase}\n"
+        f"Department: {department.value}\n"
+        f"Scheduled By: {interaction.user}\n"
+        f"Channel: #{channel.name}"
     )
 
     await send_success(
@@ -1152,7 +1157,7 @@ async def dm(
         await send_error(interaction, "Permission Denied", "Only Institute Trainers may use this command.")
         return
 
-    embed = base_embed(
+    dm_embed = base_embed(
         f"{I17} Official Institute Message",
         f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Official Message**
 
@@ -1164,7 +1169,7 @@ async def dm(
     )
 
     try:
-        await user.send(embed=embed)
+        await user.send(embed=dm_embed)
     except Exception:
         await send_error(interaction, "DM Failed", "I could not send a DM to this user.")
         return
