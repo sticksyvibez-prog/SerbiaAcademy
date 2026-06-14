@@ -1,17 +1,33 @@
+import os
+import re
+import random
+import string
+import sqlite3
+from datetime import datetime
+
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-import sqlite3
-import os
-import random
-import string
-from datetime import datetime
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-AIR_SERBIA_BLUE = 0x0033A0
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is missing. Add it in Railway Variables.")
+
+
+# ============================================================
+# BRANDING / CONFIG
+# ============================================================
+
+BRAND_COLOR = 0xAE998A
 
 TRAINER_ROLE_ID = 1512023301457973280
 TRAINEE_ROLE_ID = 1512023301445259316
@@ -24,10 +40,13 @@ HEALTH_SAFETY_ROLE_ID = 1512023301432541293
 REGISTRATION_REVIEW_CHANNEL_ID = 1515685364860325999
 LOG_CHANNEL_ID = 1515686645477937272
 
+# Emoji constants
 AIR_SERBIA_TAIL = "<:airserbiatail:1513465478918438942>"
 AIR_SERBIA_LOGO = "<:airserbialogo:1513461621417054300>"
+
 ARROW = "<:institutearrow:1513466776212738119>"
 DOT = "<:institutedot:1513466696118177792>"
+
 I1 = "<:institute1:1513466762652418069>"
 I2 = "<:institute2:1513466746265145445>"
 I3 = "<:institute3:1513466731627286538>"
@@ -37,8 +56,8 @@ I10 = "<:institute10:1512762340653924433>"
 I13 = "<:institute13:1512762266271879249>"
 I16 = "<:institute16:1512762179483336724>"
 I17 = "<:institute17:1512762153382318161>"
+
 BLANK = "<:blank:1513461587132944415>"
-ASLOGO = "<:ASlogo:1497713214417535056>"
 
 DEPARTMENT_ROLES = {
     "Cabin Crew Trainee": CABIN_CREW_ROLE_ID,
@@ -47,19 +66,39 @@ DEPARTMENT_ROLES = {
     "Health and Safety Department": HEALTH_SAFETY_ROLE_ID,
 }
 
+INSTITUTE_ROLE_IDS = {
+    TRAINER_ROLE_ID,
+    TRAINEE_ROLE_ID,
+    CABIN_CREW_ROLE_ID,
+    GROUND_CREW_ROLE_ID,
+    FLIGHT_DECK_ROLE_ID,
+    HEALTH_SAFETY_ROLE_ID,
+}
+
+
+# ============================================================
+# DISCORD SETUP
+# ============================================================
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-db = sqlite3.connect("air_serbia_academy.db")
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+db = sqlite3.connect("institute_core_v2.db")
 cursor = db.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS pending_registrations (
     discord_id INTEGER PRIMARY KEY,
     discord_username TEXT,
+    discord_display_name TEXT,
     roblox_username TEXT,
     roblox_id TEXT,
     department TEXT,
@@ -71,6 +110,7 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS registrations (
     discord_id INTEGER PRIMARY KEY,
     discord_username TEXT,
+    discord_display_name TEXT,
     roblox_username TEXT,
     roblox_id TEXT,
     department TEXT,
@@ -83,6 +123,7 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS trainings (
     training_id TEXT PRIMARY KEY,
     channel_id INTEGER,
+    department TEXT,
     department_role_id INTEGER,
     course TEXT,
     phase TEXT,
@@ -132,45 +173,107 @@ CREATE TABLE IF NOT EXISTS exam_logs (
 db.commit()
 
 
-def is_trainer(member: discord.Member):
+# ============================================================
+# HELPERS
+# ============================================================
+
+def now_text() -> str:
+    return datetime.now().strftime("%d %B %Y")
+
+
+def is_trainer(member: discord.Member) -> bool:
     return any(role.id == TRAINER_ROLE_ID for role in member.roles)
 
 
-def is_trainee(member: discord.Member):
+def is_trainee(member: discord.Member) -> bool:
     return any(role.id == TRAINEE_ROLE_ID for role in member.roles)
 
 
-def make_training_id():
+def has_institute_role(member: discord.Member) -> bool:
+    return any(role.id in INSTITUTE_ROLE_IDS for role in member.roles)
+
+
+def make_training_id() -> str:
     return "AST-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
+
+
+def ensure_url(url: str) -> str:
+    url = url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return "https://" + url
+    return url
+
+
+def roblox_profile_url(roblox_id: str) -> str:
+    return f"https://www.roblox.com/users/{roblox_id}/profile"
+
+
+async def get_roblox_headshot_url(roblox_id: str) -> str:
+    """
+    Uses Roblox's official thumbnail API and returns a direct image URL.
+    Falls back to Roblox's old thumbnail endpoint if the API fails.
+    """
+    fallback = f"https://www.roblox.com/headshot-thumbnail/image?userId={roblox_id}&width=420&height=420&format=png"
+
+    try:
+        api_url = (
+            "https://thumbnails.roblox.com/v1/users/avatar-headshot"
+            f"?userIds={roblox_id}&size=420x420&format=Png&isCircular=false"
+        )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=8) as response:
+                if response.status != 200:
+                    return fallback
+
+                data = await response.json()
+                items = data.get("data", [])
+
+                if not items:
+                    return fallback
+
+                image_url = items[0].get("imageUrl")
+                return image_url or fallback
+
+    except Exception:
+        return fallback
+
+
+def base_embed(title: str, description: str = "") -> discord.Embed:
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=BRAND_COLOR,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Air Serbia Education Institute")
+    return embed
 
 
 async def send_log(guild: discord.Guild, title: str, description: str):
     if not guild:
         return
+
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if not channel:
         return
 
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=AIR_SERBIA_BLUE,
-        timestamp=discord.utils.utcnow()
-    )
-    embed.set_footer(text="Air Serbia Education Institute Logs")
-    await channel.send(embed=embed)
+    embed = base_embed(title, description)
+    await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
-def roblox_headshot(roblox_id: str):
-    return f"https://www.roblox.com/headshot-thumbnail/image?userId={roblox_id}&width=420&height=420&format=png"
+async def send_error(interaction: discord.Interaction, title: str, description: str, ephemeral: bool = True):
+    embed = base_embed(f"{I4} {title}", description)
+    await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 
-def roblox_profile(roblox_id: str):
-    return f"https://www.roblox.com/users/{roblox_id}/profile"
+async def send_success(interaction: discord.Interaction, title: str, description: str, ephemeral: bool = True):
+    embed = base_embed(f"{I3} {title}", description)
+    await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 
-async def send_registration_dm(member: discord.Member):
-    msg = f"""> {I13} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲**
+def registration_welcome_embed() -> discord.Embed:
+    description = f"""> {I13} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲**
 
 You have been **successfully** registered and verified within the Air Serbia Education Institute. We are delighted to welcome you and congratulate you on the beginning of your academy journey.
 
@@ -182,20 +285,17 @@ Should you have any questions or require further assistance, please do not hesit
 
 > {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
 
-{BLANK}{BLANK}{ASLOGO} **Air Serbia** • *13 years of connecting people and creating memories.*
+{BLANK}{BLANK}{AIR_SERBIA_LOGO} **Air Serbia** • *13 years of connecting people and creating memories.*
 """
-    try:
-        await member.send(msg)
-    except:
-        pass
+    return base_embed("Registration Approved", description)
 
 
-async def send_rejection_dm(member: discord.Member):
-    msg = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Registration Update**
+def registration_rejection_embed() -> discord.Embed:
+    description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Registration Update**
 
 We appreciate your interest in joining the **Air Serbia Education Institute**. After reviewing your registration submission, we regret to inform you that your request has not been approved at this time.
 
-> {ARROW} Should you believe this decision was made in error, or should you require clarification, please contact an **Institute Officer** through the appropriate support channels.
+> {ARROW} If you believe this decision was made in error, or if you require clarification, please contact an **Institute Officer** through the appropriate support channels.
 
 Thank you for your time and interest in the Air Serbia Education Institute.
 
@@ -203,473 +303,45 @@ Thank you for your time and interest in the Air Serbia Education Institute.
 
 > {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
 """
-    try:
-        await member.send(msg)
-    except:
-        pass
+    return base_embed("Registration Rejected", description)
 
 
-class RegistrationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+def fail_result_embed(comments: str, exam_link: str) -> discord.Embed:
+    description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
+{BLANK}{BLANK} ⦧ *Your Course Examination results*
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="asei_register_approve")
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_trainer(interaction.user):
-            await interaction.response.send_message("You do not have permission to approve registrations.", ephemeral=True)
-            return
+On behalf of the **Air Serbia Instructional Board**, we regret to inform you that your performance in the Course Examination has __not met the required__ standard for a successful pass.
 
-        embed = interaction.message.embeds[0]
-        discord_id = None
+> After a __thorough evaluation__ of your submitted answers, it has been determined that the minimum criteria necessary for progression have not been fully satisfied at this time.
 
-        for field in embed.fields:
-            if field.name == "Discord ID":
-                discord_id = int(field.value)
-                break
+> {ARROW} **{comments}**
 
-        if not discord_id:
-            await interaction.response.send_message("Could not find Discord ID in this registration.", ephemeral=True)
-            return
+> {I4} This feedback is __intended__ to assist you in identifying areas that require improvement and to support your preparation for any *future attempts*. We **strongly** encourage you to review the training material carefully and focus on strengthening the clarity, completeness, and precision of your responses.
 
-        cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (discord_id,))
-        data = cursor.fetchone()
+{ARROW} Please be **advised** that your current result does not permit progression to the next stage at this time. Further instructions regarding a possible retake or additional training requirements may be provided by an **Institute Officer** in due course.
 
-        if not data:
-            await interaction.response.send_message("This registration is no longer pending.", ephemeral=True)
-            return
+> {DOT} **[Your Examination]({exam_link})**
 
-        discord_id, discord_username, roblox_username, roblox_id, department, submitted_at = data
-        member = interaction.guild.get_member(discord_id)
-
-        if not member:
-            await interaction.response.send_message("Member not found in this server.", ephemeral=True)
-            return
-
-        trainee_role = interaction.guild.get_role(TRAINEE_ROLE_ID)
-        department_role = interaction.guild.get_role(DEPARTMENT_ROLES.get(department))
-
-        roles = []
-        if trainee_role:
-            roles.append(trainee_role)
-        if department_role:
-            roles.append(department_role)
-
-        if roles:
-            await member.add_roles(*roles, reason="Air Serbia Education Institute registration approved")
-
-        today = datetime.now().strftime("%d %B %Y")
-
-        cursor.execute(
-            "REPLACE INTO registrations VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (discord_id, discord_username, roblox_username, roblox_id, department, today, "Active")
-        )
-        cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (discord_id,))
-        db.commit()
-
-        await send_registration_dm(member)
-
-        embed.color = discord.Color.green()
-        embed.add_field(name="Status", value=f"Approved by {interaction.user.mention}", inline=False)
-
-        for item in self.children:
-            item.disabled = True
-
-        await interaction.message.edit(embed=embed, view=self)
-
-        await send_log(
-            interaction.guild,
-            "Registration Approved",
-            f"Applicant: {member.mention}\nDepartment: {department}\nApproved By: {interaction.user.mention}"
-        )
-
-        await interaction.response.send_message("Registration approved and roles assigned.", ephemeral=True)
-
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, custom_id="asei_register_reject")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_trainer(interaction.user):
-            await interaction.response.send_message("You do not have permission to reject registrations.", ephemeral=True)
-            return
-
-        embed = interaction.message.embeds[0]
-        discord_id = None
-
-        for field in embed.fields:
-            if field.name == "Discord ID":
-                discord_id = int(field.value)
-                break
-
-        if not discord_id:
-            await interaction.response.send_message("Could not find Discord ID in this registration.", ephemeral=True)
-            return
-
-        cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (discord_id,))
-        data = cursor.fetchone()
-
-        if data:
-            member = interaction.guild.get_member(discord_id)
-            cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (discord_id,))
-            db.commit()
-
-            if member:
-                await send_rejection_dm(member)
-
-        embed.color = discord.Color.red()
-        embed.add_field(name="Status", value=f"Rejected by {interaction.user.mention}", inline=False)
-
-        for item in self.children:
-            item.disabled = True
-
-        await interaction.message.edit(embed=embed, view=self)
-
-        await send_log(
-            interaction.guild,
-            "Registration Rejected",
-            f"Applicant ID: `{discord_id}`\nRejected By: {interaction.user.mention}"
-        )
-
-        await interaction.response.send_message("Registration rejected.", ephemeral=True)
-
-
-@bot.event
-async def on_ready():
-    bot.add_view(RegistrationView())
-    await bot.tree.sync()
-    print(f"Logged in as {bot.user}")
-
-
-@bot.tree.command(name="register", description="Submit your Air Serbia Education Institute registration.")
-@app_commands.choices(department=[
-    app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
-    app_commands.Choice(name="Ground Crew Trainee", value="Ground Crew Trainee"),
-    app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
-    app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
-])
-async def register(
-    interaction: discord.Interaction,
-    roblox_username: str,
-    roblox_id: str,
-    department: app_commands.Choice[str]
-):
-    trainee_role = interaction.guild.get_role(TRAINEE_ROLE_ID)
-
-    if trainee_role and trainee_role in interaction.user.roles:
-        await interaction.response.send_message("You are already registered within the Air Serbia Education Institute.", ephemeral=True)
-        return
-
-    cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (interaction.user.id,))
-    if cursor.fetchone():
-        await interaction.response.send_message("Your registration is already pending review.", ephemeral=True)
-        return
-
-    submitted_at = datetime.now().strftime("%d %B %Y")
-
-    cursor.execute(
-        "REPLACE INTO pending_registrations VALUES (?, ?, ?, ?, ?, ?)",
-        (interaction.user.id, str(interaction.user), roblox_username, roblox_id, department.value, submitted_at)
-    )
-    db.commit()
-
-    review_channel = interaction.guild.get_channel(REGISTRATION_REVIEW_CHANNEL_ID)
-
-    embed = discord.Embed(
-        title=f"{AIR_SERBIA_LOGO} Registration Review",
-        description="A new member has submitted an Education Institute registration.",
-        color=AIR_SERBIA_BLUE,
-        timestamp=discord.utils.utcnow()
-    )
-    embed.add_field(name="Applicant", value=interaction.user.mention, inline=False)
-    embed.add_field(name="Discord Username", value=str(interaction.user), inline=True)
-    embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=True)
-    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
-    embed.add_field(name="Roblox ID", value=roblox_id, inline=True)
-    embed.add_field(name="Department", value=department.value, inline=False)
-    embed.set_thumbnail(url=roblox_headshot(roblox_id))
-    embed.set_footer(text="Air Serbia Education Institute Registration")
-
-    if review_channel:
-        await review_channel.send(embed=embed, view=RegistrationView())
-
-    await interaction.response.send_message(
-        "Your registration has been submitted for review. Please wait for an Institute Officer to approve it.",
-        ephemeral=True
-    )
-
-
-@bot.tree.command(name="profile", description="View your Air Serbia Education Institute profile.")
-async def profile(interaction: discord.Interaction):
-    if not is_trainee(interaction.user):
-        await interaction.response.send_message("You must complete registration before accessing your academy profile.", ephemeral=True)
-        return
-
-    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
-    reg = cursor.fetchone()
-
-    if not reg:
-        await interaction.response.send_message("No academy profile was found for you.", ephemeral=True)
-        return
-
-    discord_id, discord_username, roblox_username, roblox_id, department, registered_at, status = reg
-
-    cursor.execute("SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ?", (interaction.user.id,))
-    trainings = cursor.fetchall()
-
-    cursor.execute("SELECT exam_type, outcome, percentage, grader_name FROM exam_logs WHERE trainee_id = ?", (interaction.user.id,))
-    exams = cursor.fetchall()
-
-    training_text = "\n".join([f"{DOT} {c} • {d}" for c, d in trainings]) or f"{DOT} No training attendance recorded."
-
-    exam_text = "\n".join([f"{DOT} {e[0]} — **{e[1]}** ({round(e[2], 2)}%)" for e in exams]) or f"{DOT} No examination participation recorded."
-
-    latest_examiner = exams[-1][3] if exams else "None"
-    latest_grade = "None"
-
-    cursor.execute("SELECT grade FROM exam_logs WHERE trainee_id = ? ORDER BY id DESC LIMIT 1", (interaction.user.id,))
-    grade_data = cursor.fetchone()
-    if grade_data:
-        latest_grade = grade_data[0]
-
-    embed = discord.Embed(
-        title=f"{I17} {roblox_username} Profile",
-        color=AIR_SERBIA_BLUE,
-        timestamp=discord.utils.utcnow()
-    )
-
-    embed.set_author(
-        name=f"{interaction.user.display_name}'s Academy Profile",
-        icon_url=interaction.user.display_avatar.url
-    )
-    embed.set_thumbnail(url=roblox_headshot(roblox_id))
-
-    embed.description = f"""> {I8} **Training Attendance**
-{training_text}
-
-> {I10} **Examination Participation**
-{exam_text}
-
-> {I10} **Notes**
-{DOT} Department: {department}
-{DOT} Registered: {registered_at}
-{DOT} Academy Status: {status}
-{DOT} Latest Grade: {latest_grade}
-{DOT} Latest Examiner: {latest_examiner}
-
-{AIR_SERBIA_TAIL} We wish you the best of luck!
-
--# [Profile Link]({roblox_profile(roblox_id)})
-"""
-
-    embed.set_footer(text="Air Serbia Education Institute")
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="scheduletraining", description="Schedule a new course training.")
-async def scheduletraining(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    department_role: discord.Role,
-    course: str,
-    phase: str,
-    game_link: str,
-    date_timestamp: str,
-    time_timestamp: str
-):
-    if not is_trainer(interaction.user):
-        await interaction.response.send_message("You do not have permission to schedule trainings.", ephemeral=True)
-        return
-
-    training_id = make_training_id()
-    created_at = datetime.now().strftime("%d %B %Y")
-
-    cursor.execute(
-        "INSERT INTO trainings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            training_id,
-            channel.id,
-            department_role.id,
-            course,
-            phase,
-            game_link,
-            date_timestamp,
-            time_timestamp,
-            interaction.user.id,
-            str(interaction.user),
-            created_at
-        )
-    )
-    db.commit()
-
-    message = f"""{department_role.mention}
-
-> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Schedule**
-{BLANK}{BLANK} ◜*a new course training has been scheduled*
-
-*Salutations, trainees!* It gives us pleasure to announce that a new **{course}** training will be taking place at __[Location]({game_link})__.
-
-> {ARROW} In case you are unable to attend this training programme, please ensure that you communicate this to a member of the Institute so that an alternative training session may be arranged according to your timezone.
-
-{BLANK} {I16} **<t:{date_timestamp}:D>, <t:{time_timestamp}:t>**
-{DOT} Upon the __unlock__ of the training, you will be provided **10 minutes** to join before the server commences __lock__ and the training proceedings begin.
-
-> ◜*If you wish to attend, please allocate by utilising the appropriate reaction below.*
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
 
 > {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+{BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
 """
-
-    sent = await channel.send(message)
-    await sent.add_reaction("✅")
-    await sent.add_reaction("❌")
-
-    try:
-        await interaction.user.send(
-            f"{AIR_SERBIA_LOGO} Training successfully scheduled.\n\nTraining ID: `{training_id}`\nCourse: {course}\nPhase: {phase}"
-        )
-    except:
-        pass
-
-    await send_log(
-        interaction.guild,
-        "Training Scheduled",
-        f"Training ID: `{training_id}`\nCourse: {course}\nPhase: {phase}\nScheduled By: {interaction.user}"
-    )
-
-    await interaction.response.send_message(f"Training scheduled. Training ID: `{training_id}`", ephemeral=True)
+    return base_embed("Examination Results", description)
 
 
-@bot.tree.command(name="jointime", description="Open join time for a scheduled training.")
-async def jointime(interaction: discord.Interaction, training_id: str):
-    if not is_trainer(interaction.user):
-        await interaction.response.send_message("You do not have permission to open join time.", ephemeral=True)
-        return
-
-    cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
-    data = cursor.fetchone()
-
-    if not data:
-        await interaction.response.send_message("Training ID not found.", ephemeral=True)
-        return
-
-    training_id, channel_id, department_role_id, course, phase, game_link, date_timestamp, time_timestamp, scheduled_by_id, scheduled_by_name, created_at = data
-
-    channel = interaction.guild.get_channel(channel_id)
-
-    message = f"""<@&{department_role_id}>
-
-> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Commencement**
-{BLANK}{BLANK}◜*we recommend that you review the information below*
-
-> {I16} **All** participants are required to join promptly and ensure full attendance throughout.
-{ARROW} **[Join Training]({game_link})**
-
-{DOT} You are provided **10 minutes** to join before the server commences __lock__ and the training proceedings begin.
-
-> {BLANK} *Please remain professional throughout the entirety of the session. Failure to do so may result in disciplinary action.*
-
-> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
-"""
-
-    await channel.send(message)
-
-    await send_log(
-        interaction.guild,
-        "Join Time Opened",
-        f"Training ID: `{training_id}`\nOpened By: {interaction.user}"
-    )
-
-    await interaction.response.send_message("Join time posted.", ephemeral=True)
-
-
-@bot.tree.command(name="logtraining", description="Log training attendance for a trainee.")
-async def logtraining(
-    interaction: discord.Interaction,
-    training_id: str,
-    trainee: discord.Member,
-    course_name: str
-):
-    if not is_trainer(interaction.user):
-        await interaction.response.send_message("You do not have permission to log trainings.", ephemeral=True)
-        return
-
-    today = datetime.now().strftime("%d %B %Y")
-
-    cursor.execute(
-        "INSERT INTO training_logs (training_id, trainee_id, trainee_name, course_name, trainer_id, trainer_name, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            training_id,
-            trainee.id,
-            str(trainee),
-            course_name,
-            interaction.user.id,
-            str(interaction.user),
-            today
-        )
-    )
-    db.commit()
-
-    await send_log(
-        interaction.guild,
-        "Training Attendance Logged",
-        f"Trainee: {trainee.mention}\nCourse: {course_name}\nTraining ID: `{training_id}`\nTrainer: {interaction.user}"
-    )
-
-    await interaction.response.send_message("Training attendance logged.", ephemeral=True)
-
-
-@bot.tree.command(name="result", description="Send examination results to a trainee.")
-@app_commands.choices(
-    exam_type=[
-        app_commands.Choice(name="Theory Examination", value="Theory"),
-        app_commands.Choice(name="Course Examination", value="Course")
-    ],
-    outcome=[
-        app_commands.Choice(name="Pass", value="PASSED"),
-        app_commands.Choice(name="Fail", value="FAILED")
-    ]
-)
-async def result(
-    interaction: discord.Interaction,
-    trainee: discord.Member,
-    exam_type: app_commands.Choice[str],
+def theory_pass_embed(
     department: str,
     grade: str,
     points: int,
     max_points: int,
-    outcome: app_commands.Choice[str],
+    percentage: float,
     attempt_number: int,
     comments: str,
-    exam_link: str
-):
-    if not is_trainer(interaction.user):
-        await interaction.response.send_message("You do not have permission to issue results.", ephemeral=True)
-        return
-
-    percentage = (points / max_points) * 100
-    today = datetime.now().strftime("%d %B %Y")
-    grader = str(interaction.user)
-
-    cursor.execute(
-        "INSERT INTO exam_logs (trainee_id, trainee_name, exam_type, department, grade, points, max_points, percentage, outcome, attempt_number, comments, exam_link, grader_id, grader_name, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            trainee.id,
-            str(trainee),
-            exam_type.value,
-            department,
-            grade,
-            points,
-            max_points,
-            percentage,
-            outcome.value,
-            attempt_number,
-            comments,
-            exam_link,
-            interaction.user.id,
-            grader,
-            today
-        )
-    )
-    db.commit()
-
-    if outcome.value == "PASSED" and exam_type.value == "Theory":
-        dm = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
+    exam_link: str,
+    grader: str
+) -> discord.Embed:
+    description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
 
 {BLANK}{BLANK} ⦧ **Theory Examination Results**
 
@@ -696,9 +368,21 @@ We are confident that you will continue to perform to the highest standards thro
 
 {BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
 """
+    return base_embed("Theory Examination Passed", description)
 
-    elif outcome.value == "PASSED" and exam_type.value == "Course":
-        dm = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
+
+def course_pass_embed(
+    department: str,
+    grade: str,
+    points: int,
+    max_points: int,
+    percentage: float,
+    attempt_number: int,
+    comments: str,
+    exam_link: str,
+    grader: str
+) -> discord.Embed:
+    description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
 
 {BLANK}{BLANK} ⦧ **Course 1 Results**
 
@@ -728,70 +412,853 @@ On behalf of the **Air Serbia Instructional Board**, we would like to sincerely 
 
 {BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
 """
-    else:
-        dm = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
-{BLANK}{BLANK} ⦧ *Your Course Examination results*
+    return base_embed("Course Examination Passed", description)
 
-On behalf of the **Air Serbia Instructional Board**, we regret to inform you that your performance in the Course Examination has __not met the required__ standard for a successful pass.
 
-> After a __thorough evaluation__ of your submitted answers, it has been determined that the minimum criteria necessary for progression have not been fully satisfied at this time.
+# ============================================================
+# REGISTRATION APPROVAL VIEW
+# ============================================================
 
-> {ARROW} **{comments}**
+class RegistrationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-> {I4} This feedback is __intended__ to assist you in identifying areas that require improvement and to support your preparation for any *future attempts*. We **strongly** encourage you to review the training material carefully and focus on strengthening the clarity, completeness, and precision of your responses.
+    @discord.ui.button(
+        label="Approve",
+        style=discord.ButtonStyle.success,
+        custom_id="asei_registration_approve"
+    )
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+            await send_error(interaction, "Permission Denied", "Only Institute Trainers may approve registrations.")
+            return
 
-{ARROW} Please be **advised** that your current result does not permit progression to the next stage at this time. Further instructions regarding a possible retake or additional training requirements may be provided by an **Institute Officer** in due course.
+        embed = interaction.message.embeds[0]
+        discord_id = None
 
-> {DOT} **[Your Examination]({exam_link})**
+        for field in embed.fields:
+            if field.name == "Discord ID":
+                discord_id = int(field.value)
+                break
 
-**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+        if not discord_id:
+            await send_error(interaction, "Registration Error", "Discord ID could not be found in this registration request.")
+            return
+
+        cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+        data = cursor.fetchone()
+
+        if not data:
+            await send_error(interaction, "Registration Error", "This registration request is no longer pending.")
+            return
+
+        (
+            discord_id,
+            discord_username,
+            discord_display_name,
+            roblox_username,
+            roblox_id,
+            department,
+            submitted_at
+        ) = data
+
+        member = interaction.guild.get_member(discord_id)
+
+        if not member:
+            await send_error(interaction, "Member Not Found", "The applicant is no longer in this server.")
+            return
+
+        trainee_role = interaction.guild.get_role(TRAINEE_ROLE_ID)
+        department_role = interaction.guild.get_role(DEPARTMENT_ROLES.get(department))
+
+        roles_to_add = []
+        if trainee_role:
+            roles_to_add.append(trainee_role)
+        if department_role:
+            roles_to_add.append(department_role)
+
+        try:
+            if roles_to_add:
+                await member.add_roles(
+                    *roles_to_add,
+                    reason="Air Serbia Education Institute registration approved"
+                )
+        except discord.Forbidden:
+            await send_error(
+                interaction,
+                "Role Error",
+                "I could not assign the roles. Please place my bot role above the trainee and department roles."
+            )
+            return
+
+        registered_at = now_text()
+
+        cursor.execute(
+            "REPLACE INTO registrations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                discord_id,
+                discord_username,
+                discord_display_name,
+                roblox_username,
+                roblox_id,
+                department,
+                registered_at,
+                "Active"
+            )
+        )
+        cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+        db.commit()
+
+        try:
+            await member.send(embed=registration_welcome_embed())
+        except Exception:
+            pass
+
+        embed.color = discord.Color.green()
+        embed.add_field(name="Status", value=f"Approved by {interaction.user}", inline=False)
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.message.edit(embed=embed, view=self)
+
+        await send_log(
+            interaction.guild,
+            "Registration Approved",
+            f"Applicant: {member} (`{member.id}`)\nDepartment: {department}\nApproved By: {interaction.user}"
+        )
+
+        await send_success(interaction, "Registration Approved", "The applicant has been registered and ranked.")
+
+    @discord.ui.button(
+        label="Reject",
+        style=discord.ButtonStyle.danger,
+        custom_id="asei_registration_reject"
+    )
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+            await send_error(interaction, "Permission Denied", "Only Institute Trainers may reject registrations.")
+            return
+
+        embed = interaction.message.embeds[0]
+        discord_id = None
+
+        for field in embed.fields:
+            if field.name == "Discord ID":
+                discord_id = int(field.value)
+                break
+
+        if not discord_id:
+            await send_error(interaction, "Registration Error", "Discord ID could not be found in this registration request.")
+            return
+
+        cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+        data = cursor.fetchone()
+
+        member = interaction.guild.get_member(discord_id)
+
+        if data:
+            cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+            db.commit()
+
+        if member:
+            try:
+                await member.send(embed=registration_rejection_embed())
+            except Exception:
+                pass
+
+        embed.color = discord.Color.red()
+        embed.add_field(name="Status", value=f"Rejected by {interaction.user}", inline=False)
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.message.edit(embed=embed, view=self)
+
+        await send_log(
+            interaction.guild,
+            "Registration Rejected",
+            f"Applicant ID: `{discord_id}`\nRejected By: {interaction.user}"
+        )
+
+        await send_success(interaction, "Registration Rejected", "The applicant has been rejected.")
+
+
+# ============================================================
+# BOT EVENTS
+# ============================================================
+
+@bot.event
+async def on_ready():
+    bot.add_view(RegistrationView())
+    await bot.tree.sync()
+    print(f"Logged in as {bot.user}")
+
+
+# ============================================================
+# COMMANDS
+# ============================================================
+
+@bot.tree.command(name="register", description="Submit your Education Institute registration.")
+@app_commands.choices(department=[
+    app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
+    app_commands.Choice(name="Ground Crew Trainee", value="Ground Crew Trainee"),
+    app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
+    app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
+])
+async def register(
+    interaction: discord.Interaction,
+    roblox_username: str,
+    roblox_id: str,
+    department: app_commands.Choice[str]
+):
+    if not isinstance(interaction.user, discord.Member):
+        await send_error(interaction, "Server Only", "This command can only be used inside the server.")
+        return
+
+    if has_institute_role(interaction.user):
+        await send_error(
+            interaction,
+            "Already Registered",
+            "You are already registered or already hold an Institute role."
+        )
+        return
+
+    if not re.fullmatch(r"\d{2,20}", roblox_id):
+        await send_error(
+            interaction,
+            "Invalid Roblox User ID",
+            "Please enter your numeric Roblox User ID, not your Roblox username."
+        )
+        return
+
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    if cursor.fetchone():
+        await send_error(
+            interaction,
+            "Already Registered",
+            "You already have an approved Education Institute profile."
+        )
+        return
+
+    cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (interaction.user.id,))
+    if cursor.fetchone():
+        await send_error(
+            interaction,
+            "Registration Pending",
+            "Your registration is already pending review by an Institute Officer."
+        )
+        return
+
+    submitted_at = now_text()
+
+    cursor.execute(
+        "REPLACE INTO pending_registrations VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            interaction.user.id,
+            str(interaction.user),
+            interaction.user.display_name,
+            roblox_username,
+            roblox_id,
+            department.value,
+            submitted_at
+        )
+    )
+    db.commit()
+
+    review_channel = interaction.guild.get_channel(REGISTRATION_REVIEW_CHANNEL_ID)
+    headshot_url = await get_roblox_headshot_url(roblox_id)
+
+    embed = base_embed(
+        f"{AIR_SERBIA_LOGO} Registration Review",
+        "A new Education Institute registration has been submitted and is awaiting review."
+    )
+    embed.add_field(name="Applicant", value=f"{interaction.user} (`{interaction.user.id}`)", inline=False)
+    embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=True)
+    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
+    embed.add_field(name="Roblox User ID", value=roblox_id, inline=True)
+    embed.add_field(name="Department", value=department.value, inline=False)
+    embed.add_field(name="Submitted", value=submitted_at, inline=True)
+    embed.add_field(name="Roblox Profile", value=f"[Profile Link]({roblox_profile_url(roblox_id)})", inline=False)
+    embed.set_thumbnail(url=headshot_url)
+
+    if review_channel:
+        await review_channel.send(embed=embed, view=RegistrationView())
+
+    await send_success(
+        interaction,
+        "Registration Submitted",
+        "Your registration has been submitted for review. Please wait for an Institute Officer to approve it."
+    )
+
+
+@bot.tree.command(name="profile", description="View your Air Serbia Education Institute profile.")
+async def profile(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member):
+        await send_error(interaction, "Server Only", "This command can only be used inside the server.")
+        return
+
+    if not is_trainee(interaction.user):
+        await send_error(
+            interaction,
+            "Registration Required",
+            "You must complete registration before accessing your academy profile."
+        )
+        return
+
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    reg = cursor.fetchone()
+
+    if not reg:
+        await send_error(
+            interaction,
+            "Profile Not Found",
+            "No approved academy profile was found for you."
+        )
+        return
+
+    (
+        discord_id,
+        discord_username,
+        discord_display_name,
+        roblox_username,
+        roblox_id,
+        department,
+        registered_at,
+        status
+    ) = reg
+
+    cursor.execute("SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC", (interaction.user.id,))
+    trainings = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT exam_type, outcome, percentage, grade, grader_name, logged_at
+    FROM exam_logs
+    WHERE trainee_id = ?
+    ORDER BY id ASC
+    """, (interaction.user.id,))
+    exams = cursor.fetchall()
+
+    training_text = "\n".join(
+        [f"{DOT} {course} • {date}" for course, date in trainings]
+    ) or f"{DOT} No training attendance recorded."
+
+    exam_text = "\n".join(
+        [f"{DOT} {exam_type} — **{outcome}** • {round(percentage, 2)}% • {date}" for exam_type, outcome, percentage, grade, grader, date in exams]
+    ) or f"{DOT} No examination participation recorded."
+
+    latest_grade = "None"
+    latest_examiner = "None"
+
+    if exams:
+        latest_grade = exams[-1][3]
+        latest_examiner = exams[-1][4]
+
+    headshot_url = await get_roblox_headshot_url(roblox_id)
+
+    embed = base_embed(
+        f"{I17} {roblox_username} Profile",
+        f"""> {I8} **Training Attendance**
+{training_text}
+
+> {I10} **Examination Participation**
+{exam_text}
+
+> {I10} **Notes**
+{DOT} Warnings: None
+{DOT} Department: {department}
+{DOT} Registered: {registered_at}
+{DOT} Academy Status: {status}
+{DOT} Latest Grade: {latest_grade}
+{DOT} Latest Examiner: {latest_examiner}
+
+{AIR_SERBIA_TAIL} We wish you the best of luck!
+
+-# [Profile Link]({roblox_profile_url(roblox_id)})
+"""
+    )
+    embed.set_author(
+        name=f"{interaction.user.display_name}'s Academy Profile",
+        icon_url=interaction.user.display_avatar.url
+    )
+    embed.set_thumbnail(url=headshot_url)
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="progress", description="View your academy progress.")
+async def progress(interaction: discord.Interaction):
+    await profile(interaction)
+
+
+@bot.tree.command(name="scheduletraining", description="Schedule a new course training.")
+@app_commands.choices(department=[
+    app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
+    app_commands.Choice(name="Ground Crew Trainee", value="Ground Crew Trainee"),
+    app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
+    app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
+])
+async def scheduletraining(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    department: app_commands.Choice[str],
+    course: str,
+    phase: str,
+    game_link: str,
+    date_timestamp: str,
+    time_timestamp: str
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may schedule trainings.")
+        return
+
+    game_link = ensure_url(game_link)
+    department_role_id = DEPARTMENT_ROLES[department.value]
+    department_role = interaction.guild.get_role(department_role_id)
+
+    if not department_role:
+        await send_error(interaction, "Role Not Found", "The department role could not be found.")
+        return
+
+    training_id = make_training_id()
+    created_at = now_text()
+
+    cursor.execute(
+        "INSERT INTO trainings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            training_id,
+            channel.id,
+            department.value,
+            department_role.id,
+            course,
+            phase,
+            game_link,
+            date_timestamp,
+            time_timestamp,
+            interaction.user.id,
+            str(interaction.user),
+            created_at
+        )
+    )
+    db.commit()
+
+    description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Schedule**
+{BLANK}{BLANK} ◜*a new course training has been scheduled*
+
+*Salutations, trainees!* It gives us pleasure to announce that a new **{course}** training will be taking place at **[Location]({game_link})**.
+
+> {ARROW} In case you are unable to attend this training programme, please ensure that you communicate this to a member of the Institute so that an alternative training session may be arranged according to your timezone.
+
+{BLANK} {I16} **<t:{date_timestamp}:D>, <t:{time_timestamp}:t>**
+
+{DOT} Upon the __unlock__ of the training, you will be provided **10 minutes** to join before the server commences __lock__ and the training proceedings begin.
+
+> ◜*If you wish to attend, please allocate by utilising the appropriate reaction below.*
 
 > {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
-{BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
 """
 
+    embed = base_embed("Course Schedule", description)
+
+    sent = await channel.send(
+        content=department_role.mention,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(roles=True)
+    )
+
+    await sent.add_reaction("✅")
+    await sent.add_reaction("❌")
+
+    dm_embed = base_embed(
+        "Training Successfully Scheduled",
+        f"{AIR_SERBIA_LOGO} Your course training has been scheduled successfully.\n\n"
+        f"{DOT} **Training ID:** `{training_id}`\n"
+        f"{DOT} **Course:** {course}\n"
+        f"{DOT} **Phase:** {phase}\n"
+        f"{DOT} **Department:** {department.value}\n\n"
+        "Please keep this Training ID safe. It will be required for join time and attendance logging."
+    )
+
     try:
-        await trainee.send(dm)
-    except:
+        await interaction.user.send(embed=dm_embed)
+    except Exception:
         pass
 
+    await send_log(
+        interaction.guild,
+        "Training Scheduled",
+        f"Training ID: `{training_id}`\nCourse: {course}\nPhase: {phase}\nDepartment: {department.value}\nScheduled By: {interaction.user}\nChannel: #{channel.name}"
+    )
+
+    await send_success(
+        interaction,
+        "Training Scheduled",
+        f"Training has been posted successfully.\n\n{DOT} **Training ID:** `{training_id}`"
+    )
+
+
+@bot.tree.command(name="jointime", description="Open join time for a scheduled training.")
+async def jointime(
+    interaction: discord.Interaction,
+    training_id: str
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may open join time.")
+        return
+
+    cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
+    data = cursor.fetchone()
+
+    if not data:
+        await send_error(interaction, "Training Not Found", "No training was found with that Training ID.")
+        return
+
+    (
+        training_id,
+        channel_id,
+        department,
+        department_role_id,
+        course,
+        phase,
+        game_link,
+        date_timestamp,
+        time_timestamp,
+        scheduled_by_id,
+        scheduled_by_name,
+        created_at
+    ) = data
+
+    channel = interaction.guild.get_channel(channel_id)
+    department_role = interaction.guild.get_role(department_role_id)
+
+    if not channel or not department_role:
+        await send_error(interaction, "Training Error", "The saved channel or department role could not be found.")
+        return
+
+    description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Commencement**
+{BLANK}{BLANK}◜*we recommend that you review the information below*
+
+> {I16} **All** participants are required to join promptly and ensure full attendance throughout.
+
+{ARROW} **[Join Training]({game_link})**
+
+{DOT} You are provided **10 minutes** to join before the server commences __lock__ and the training proceedings begin.
+
+> {BLANK} *Please remain professional throughout the entirety of the session. Failure to do so may result in disciplinary action.*
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+"""
+
+    embed = base_embed("Course Commencement", description)
+
+    await channel.send(
+        content=department_role.mention,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(roles=True)
+    )
+
+    await send_log(
+        interaction.guild,
+        "Join Time Opened",
+        f"Training ID: `{training_id}`\nCourse: {course}\nDepartment: {department}\nOpened By: {interaction.user}"
+    )
+
+    await send_success(interaction, "Join Time Posted", "Course commencement has been posted successfully.")
+
+
+@bot.tree.command(name="logtraining", description="Log training attendance for a trainee.")
+async def logtraining(
+    interaction: discord.Interaction,
+    training_id: str,
+    trainee: discord.Member,
+    course_name: str
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may log training attendance.")
+        return
+
+    cursor.execute("SELECT training_id FROM trainings WHERE training_id = ?", (training_id,))
+    if not cursor.fetchone():
+        await send_error(interaction, "Training Not Found", "No training was found with that Training ID.")
+        return
+
+    today = now_text()
+
+    cursor.execute(
+        "INSERT INTO training_logs (training_id, trainee_id, trainee_name, course_name, trainer_id, trainer_name, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            training_id,
+            trainee.id,
+            str(trainee),
+            course_name,
+            interaction.user.id,
+            str(interaction.user),
+            today
+        )
+    )
+    db.commit()
+
+    await send_log(
+        interaction.guild,
+        "Training Attendance Logged",
+        f"Trainee: {trainee} (`{trainee.id}`)\nCourse: {course_name}\nTraining ID: `{training_id}`\nTrainer: {interaction.user}"
+    )
+
+    await send_success(interaction, "Attendance Logged", "Training attendance has been saved successfully.")
+
+
+@bot.tree.command(name="result", description="Issue examination results to a trainee.")
+@app_commands.choices(
+    exam_type=[
+        app_commands.Choice(name="Theory Examination", value="Theory"),
+        app_commands.Choice(name="Universal Course Examination", value="Course"),
+    ],
+    department=[
+        app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
+        app_commands.Choice(name="Ground Crew Trainee", value="Ground Crew Trainee"),
+        app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
+        app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
+    ],
+    outcome=[
+        app_commands.Choice(name="Pass", value="PASSED"),
+        app_commands.Choice(name="Fail", value="FAILED"),
+    ]
+)
+async def result(
+    interaction: discord.Interaction,
+    trainee: discord.Member,
+    exam_type: app_commands.Choice[str],
+    department: app_commands.Choice[str],
+    grade: str,
+    points: int,
+    max_points: int,
+    outcome: app_commands.Choice[str],
+    attempt_number: int,
+    comments: str,
+    exam_link: str
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may issue results.")
+        return
+
+    if max_points <= 0:
+        await send_error(interaction, "Invalid Score", "Maximum points must be greater than 0.")
+        return
+
+    exam_link = ensure_url(exam_link)
+    percentage = (points / max_points) * 100
+    today = now_text()
+    grader = str(interaction.user)
+
+    cursor.execute(
+        """
+        INSERT INTO exam_logs (
+            trainee_id, trainee_name, exam_type, department, grade,
+            points, max_points, percentage, outcome, attempt_number,
+            comments, exam_link, grader_id, grader_name, logged_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            trainee.id,
+            str(trainee),
+            exam_type.value,
+            department.value,
+            grade,
+            points,
+            max_points,
+            percentage,
+            outcome.value,
+            attempt_number,
+            comments,
+            exam_link,
+            interaction.user.id,
+            grader,
+            today
+        )
+    )
+    db.commit()
+
+    if outcome.value == "PASSED" and exam_type.value == "Theory":
+        dm_embed = theory_pass_embed(
+            department.value,
+            grade,
+            points,
+            max_points,
+            percentage,
+            attempt_number,
+            comments,
+            exam_link,
+            grader
+        )
+    elif outcome.value == "PASSED" and exam_type.value == "Course":
+        dm_embed = course_pass_embed(
+            department.value,
+            grade,
+            points,
+            max_points,
+            percentage,
+            attempt_number,
+            comments,
+            exam_link,
+            grader
+        )
+    else:
+        dm_embed = fail_result_embed(comments, exam_link)
+
+    try:
+        await trainee.send(embed=dm_embed)
+    except Exception:
+        pass
+
+    kicked = False
     if outcome.value == "FAILED" and attempt_number >= 2:
         try:
-            await trainee.kick(reason=f"Failed {exam_type.value} Examination on second attempt.")
-        except:
-            pass
+            await trainee.kick(reason=f"Failed {exam_type.name} on second attempt.")
+            kicked = True
+        except Exception:
+            kicked = False
 
     await send_log(
         interaction.guild,
         "Examination Result Issued",
-        f"Trainee: {trainee.mention}\nExam: {exam_type.value}\nDepartment: {department}\nScore: {points}/{max_points} ({round(percentage, 2)}%)\nResult: {outcome.value}\nAttempt: {attempt_number}\nGraded By: {interaction.user}"
+        f"Trainee: {trainee} (`{trainee.id}`)\n"
+        f"Exam: {exam_type.name}\n"
+        f"Department: {department.value}\n"
+        f"Score: {points}/{max_points} ({round(percentage, 2)}%)\n"
+        f"Grade: {grade}\n"
+        f"Result: {outcome.value}\n"
+        f"Attempt: {attempt_number}\n"
+        f"Graded By: {interaction.user}\n"
+        f"Second Attempt Kick: {'Yes' if kicked else 'No'}"
     )
 
-    await interaction.response.send_message("Result issued and saved.", ephemeral=True)
+    await send_success(
+        interaction,
+        "Result Issued",
+        f"The result has been saved and delivered.\n\n{DOT} **Result:** {outcome.value}\n{DOT} **Percentage:** {round(percentage, 2)}%"
+    )
 
 
 @bot.tree.command(name="dm", description="Send an official institute DM to a member.")
-async def dm(interaction: discord.Interaction, user: discord.Member, message: str):
-    if not is_trainer(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+async def dm(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    message: str
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may use this command.")
         return
 
-    final = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Official Message**
+    embed = base_embed(
+        f"{I17} Official Institute Message",
+        f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Official Message**
 
 {message}
 
 **ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
 > {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲**
 """
+    )
 
     try:
-        await user.send(final)
-    except:
-        await interaction.response.send_message("Could not DM this user.", ephemeral=True)
+        await user.send(embed=embed)
+    except Exception:
+        await send_error(interaction, "DM Failed", "I could not send a DM to this user.")
         return
 
-    await send_log(interaction.guild, "Official DM Sent", f"Recipient: {user.mention}\nSent By: {interaction.user}")
-    await interaction.response.send_message("DM sent.", ephemeral=True)
+    await send_log(
+        interaction.guild,
+        "Official DM Sent",
+        f"Recipient: {user} (`{user.id}`)\nSent By: {interaction.user}"
+    )
+
+    await send_success(interaction, "DM Sent", "The official institute message has been delivered.")
+
+
+@bot.tree.command(name="canceltraining", description="Cancel a scheduled training.")
+async def canceltraining(
+    interaction: discord.Interaction,
+    training_id: str,
+    reason: str
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may cancel trainings.")
+        return
+
+    cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
+    data = cursor.fetchone()
+
+    if not data:
+        await send_error(interaction, "Training Not Found", "No training was found with that Training ID.")
+        return
+
+    (
+        training_id,
+        channel_id,
+        department,
+        department_role_id,
+        course,
+        phase,
+        game_link,
+        date_timestamp,
+        time_timestamp,
+        scheduled_by_id,
+        scheduled_by_name,
+        created_at
+    ) = data
+
+    channel = interaction.guild.get_channel(channel_id)
+    department_role = interaction.guild.get_role(department_role_id)
+
+    if channel and department_role:
+        embed = base_embed(
+            "Course Training Cancelled",
+            f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Training Cancellation**
+
+The scheduled **{course}** training has been cancelled.
+
+{DOT} **Training ID:** `{training_id}`
+{DOT} **Department:** {department}
+{DOT} **Reason:** {reason}
+
+Please await further instructions from an **Institute Officer**.
+"""
+        )
+
+        await channel.send(
+            content=department_role.mention,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True)
+        )
+
+    await send_log(
+        interaction.guild,
+        "Training Cancelled",
+        f"Training ID: `{training_id}`\nCourse: {course}\nDepartment: {department}\nCancelled By: {interaction.user}\nReason: {reason}"
+    )
+
+    await send_success(interaction, "Training Cancelled", "The training cancellation has been posted.")
+
+
+@bot.tree.command(name="help", description="View Institute Core commands.")
+async def help_command(interaction: discord.Interaction):
+    description = f"""{AIR_SERBIA_LOGO} **Institute Core Command Directory**
+
+> {DOT} `/register` — Submit your registration for review.
+> {DOT} `/profile` — View your academy profile.
+> {DOT} `/progress` — View your academy progress.
+> {DOT} `/scheduletraining` — Schedule a course training.
+> {DOT} `/jointime` — Open join time using a Training ID.
+> {DOT} `/logtraining` — Log training attendance.
+> {DOT} `/result` — Issue examination results.
+> {DOT} `/dm` — Send an official institute DM.
+> {DOT} `/canceltraining` — Cancel a scheduled training.
+
+{I17} **Air Serbia Education Institute** ⦧ *Reaching new heights, revolutionising the industry*
+"""
+    embed = base_embed("Institute Core Help", description)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 bot.run(TOKEN)
