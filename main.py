@@ -29,6 +29,8 @@ if not TOKEN:
 
 BRAND_COLOR = 0xAE998A
 
+GUILD_ID = 1512023301420224673
+
 TRAINER_ROLE_ID = 1512023301457973280
 TRAINEE_ROLE_ID = 1512023301445259316
 
@@ -39,7 +41,6 @@ HEALTH_SAFETY_ROLE_ID = 1512023301432541293
 
 REGISTRATION_REVIEW_CHANNEL_ID = 1515685364860325999
 LOG_CHANNEL_ID = 1515686645477937272
-GUILD_ID = 1512023301420224673
 
 AIR_SERBIA_TAIL = "<:airserbiatail:1513465478918438942>"
 AIR_SERBIA_LOGO = "<:airserbialogo:1513461621417054300>"
@@ -87,6 +88,7 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+bot.persistent_views_added = False
 
 
 # ============================================================
@@ -519,10 +521,11 @@ class RegistrationView(discord.ui.View):
         embed.color = discord.Color.green()
         embed.add_field(name="Status", value=f"Approved by {interaction.user}", inline=False)
 
-        for item in self.children:
+        disabled_view = RegistrationView()
+        for item in disabled_view.children:
             item.disabled = True
 
-        await interaction.message.edit(embed=embed, view=self)
+        await interaction.message.edit(embed=embed, view=disabled_view)
 
         await send_log(
             interaction.guild,
@@ -572,10 +575,11 @@ class RegistrationView(discord.ui.View):
         embed.color = discord.Color.red()
         embed.add_field(name="Status", value=f"Rejected by {interaction.user}", inline=False)
 
-        for item in self.children:
+        disabled_view = RegistrationView()
+        for item in disabled_view.children:
             item.disabled = True
 
-        await interaction.message.edit(embed=embed, view=self)
+        await interaction.message.edit(embed=embed, view=disabled_view)
 
         await send_log(
             interaction.guild,
@@ -592,9 +596,124 @@ class RegistrationView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    bot.add_view(RegistrationView())
-    await bot.tree.sync()
+    if not bot.persistent_views_added:
+        bot.add_view(RegistrationView())
+        bot.persistent_views_added = True
+
+    guild = discord.Object(id=GUILD_ID)
+
+    try:
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"Synced {len(synced)} command(s) to Air Serbia server.")
+    except Exception as e:
+        print(f"Command sync failed: {e}")
+
     print(f"Logged in as {bot.user}")
+
+
+# ============================================================
+# PROFILE HELPER
+# ============================================================
+
+async def send_profile_embed(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member):
+        await send_error(interaction, "Server Only", "This command can only be used inside the server.")
+        return
+
+    if not is_trainee(interaction.user):
+        await send_error(
+            interaction,
+            "Registration Required",
+            "You must complete registration before accessing your academy profile."
+        )
+        return
+
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    reg = cursor.fetchone()
+
+    if not reg:
+        await send_error(
+            interaction,
+            "Profile Not Found",
+            "No approved academy profile was found for you."
+        )
+        return
+
+    (
+        discord_id,
+        discord_username,
+        discord_display_name,
+        roblox_username,
+        roblox_id,
+        department,
+        registered_at,
+        status
+    ) = reg
+
+    cursor.execute(
+        "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
+        (interaction.user.id,)
+    )
+    trainings = cursor.fetchall()
+
+    cursor.execute("""
+    SELECT exam_type, outcome, percentage, grade, grader_name, logged_at
+    FROM exam_logs
+    WHERE trainee_id = ?
+    ORDER BY id ASC
+    """, (interaction.user.id,))
+    exams = cursor.fetchall()
+
+    training_text = "\n".join(
+        [f"{DOT} {course} • {date}" for course, date in trainings]
+    ) or f"{DOT} No training attendance recorded."
+
+    exam_text = "\n".join(
+        [
+            f"{DOT} {exam_type} — **{outcome}** • {round(percentage, 2)}% • {date}"
+            for exam_type, outcome, percentage, grade, grader, date in exams
+        ]
+    ) or f"{DOT} No examination participation recorded."
+
+    latest_grade = "None"
+    latest_examiner = "None"
+
+    if exams:
+        latest_grade = exams[-1][3]
+        latest_examiner = exams[-1][4]
+
+    headshot_url = await get_roblox_headshot_url(roblox_id)
+
+    embed = base_embed(
+        f"{I17} {roblox_username} Profile",
+        f"""> {I8} **Training Attendance**
+{training_text}
+
+> {I10} **Examination Participation**
+{exam_text}
+
+> {I10} **Notes**
+{DOT} Warnings: None
+{DOT} Department: {department}
+{DOT} Registered: {registered_at}
+{DOT} Academy Status: {status}
+{DOT} Latest Grade: {latest_grade}
+{DOT} Latest Examiner: {latest_examiner}
+
+{AIR_SERBIA_TAIL} We wish you the best of luck!
+
+[Profile Link]({roblox_profile_url(roblox_id)})
+"""
+    )
+
+    embed.set_author(
+        name=f"{interaction.user.display_name}'s Academy Profile",
+        icon_url=interaction.user.display_avatar.url
+    )
+    embed.set_thumbnail(url=headshot_url)
+
+    await interaction.response.send_message(embed=embed)
 
 
 # ============================================================
@@ -608,20 +727,11 @@ async def on_ready():
     app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
     app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
 ])
-@bot.event
-async def on_ready():
-    bot.add_view(RegistrationView())
-
-    guild = discord.Object(id=GUILD_ID)
-
-    try:
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(synced)} command(s) to Air Serbia server.")
-    except Exception as e:
-        print(f"Command sync failed: {e}")
-
-    print(f"Logged in as {bot.user}")
+async def register(
+    interaction: discord.Interaction,
+    roblox_username: str,
+    roblox_id: str,
+    department: app_commands.Choice[str]
 ):
     if not isinstance(interaction.user, discord.Member):
         await send_error(interaction, "Server Only", "This command can only be used inside the server.")
@@ -705,101 +815,12 @@ async def on_ready():
 
 @bot.tree.command(name="profile", description="View your Air Serbia Education Institute profile.")
 async def profile(interaction: discord.Interaction):
-    if not isinstance(interaction.user, discord.Member):
-        await send_error(interaction, "Server Only", "This command can only be used inside the server.")
-        return
-
-    if not is_trainee(interaction.user):
-        await send_error(
-            interaction,
-            "Registration Required",
-            "You must complete registration before accessing your academy profile."
-        )
-        return
-
-    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
-    reg = cursor.fetchone()
-
-    if not reg:
-        await send_error(
-            interaction,
-            "Profile Not Found",
-            "No approved academy profile was found for you."
-        )
-        return
-
-    (
-        discord_id,
-        discord_username,
-        discord_display_name,
-        roblox_username,
-        roblox_id,
-        department,
-        registered_at,
-        status
-    ) = reg
-
-    cursor.execute("SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC", (interaction.user.id,))
-    trainings = cursor.fetchall()
-
-    cursor.execute("""
-    SELECT exam_type, outcome, percentage, grade, grader_name, logged_at
-    FROM exam_logs
-    WHERE trainee_id = ?
-    ORDER BY id ASC
-    """, (interaction.user.id,))
-    exams = cursor.fetchall()
-
-    training_text = "\n".join(
-        [f"{DOT} {course} • {date}" for course, date in trainings]
-    ) or f"{DOT} No training attendance recorded."
-
-    exam_text = "\n".join(
-        [f"{DOT} {exam_type} — **{outcome}** • {round(percentage, 2)}% • {date}" for exam_type, outcome, percentage, grade, grader, date in exams]
-    ) or f"{DOT} No examination participation recorded."
-
-    latest_grade = "None"
-    latest_examiner = "None"
-
-    if exams:
-        latest_grade = exams[-1][3]
-        latest_examiner = exams[-1][4]
-
-    headshot_url = await get_roblox_headshot_url(roblox_id)
-
-    embed = base_embed(
-        f"{I17} {roblox_username} Profile",
-        f"""> {I8} **Training Attendance**
-{training_text}
-
-> {I10} **Examination Participation**
-{exam_text}
-
-> {I10} **Notes**
-{DOT} Warnings: None
-{DOT} Department: {department}
-{DOT} Registered: {registered_at}
-{DOT} Academy Status: {status}
-{DOT} Latest Grade: {latest_grade}
-{DOT} Latest Examiner: {latest_examiner}
-
-{AIR_SERBIA_TAIL} We wish you the best of luck!
-
-[Profile Link]({roblox_profile_url(roblox_id)})
-"""
-    )
-    embed.set_author(
-        name=f"{interaction.user.display_name}'s Academy Profile",
-        icon_url=interaction.user.display_avatar.url
-    )
-    embed.set_thumbnail(url=headshot_url)
-
-    await interaction.response.send_message(embed=embed)
+    await send_profile_embed(interaction)
 
 
 @bot.tree.command(name="progress", description="View your academy progress.")
 async def progress(interaction: discord.Interaction):
-    await profile(interaction)
+    await send_profile_embed(interaction)
 
 
 @bot.tree.command(name="scheduletraining", description="Schedule a new course training.")
@@ -1257,8 +1278,8 @@ Please await further instructions from an **Institute Officer**.
 
     await send_success(interaction, "Training Cancelled", "The training cancellation has been posted.")
 
-    
-    @bot.tree.command(name="deleteregistration", description="Delete a trainee registration record.")
+
+@bot.tree.command(name="deleteregistration", description="Delete a trainee registration record.")
 async def deleteregistration(
     interaction: discord.Interaction,
     user: discord.Member,
@@ -1335,6 +1356,7 @@ async def help_command(interaction: discord.Interaction):
 > {DOT} `/result` — Issue examination results.
 > {DOT} `/dm` — Send an official institute DM.
 > {DOT} `/canceltraining` — Cancel a scheduled training.
+> {DOT} `/deleteregistration` — Delete a trainee registration record.
 
 {I17} **Air Serbia Education Institute** ⦧ *Reaching new heights, revolutionising the industry*
 """
