@@ -54,6 +54,8 @@ I4 = "<:institute4:1513466717035298907>"
 I8 = "<:institute8:1512762370383020122>"
 I10 = "<:institute10:1512762340653924433>"
 I13 = "<:institute13:1512762266271879249>"
+I14 = "<:institute14:1512762250124070972>"  # Cross
+I15 = "<:institute15:1512762236018622545>"  # Tick
 I16 = "<:institute16:1512762179483336724>"
 I17 = "<:institute17:1512762153382318161>"
 
@@ -866,8 +868,8 @@ async def scheduletraining(
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
 
-    await sent.add_reaction("✅")
-    await sent.add_reaction("❌")
+    await sent.add_reaction(discord.PartialEmoji.from_str(I15))
+await sent.add_reaction(discord.PartialEmoji.from_str(I14))
 
     dm_embed = base_embed(
         "Training Successfully Scheduled",
