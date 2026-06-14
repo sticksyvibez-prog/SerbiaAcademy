@@ -1246,6 +1246,68 @@ Please await further instructions from an **Institute Officer**.
     )
 
     await send_success(interaction, "Training Cancelled", "The training cancellation has been posted.")
+    @bot.tree.command(name="deleteregistration", description="Delete a trainee registration record.")
+async def deleteregistration(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    remove_roles: bool = True
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may delete registrations.")
+        return
+
+    cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (user.id,))
+    cursor.execute("DELETE FROM registrations WHERE discord_id = ?", (user.id,))
+    cursor.execute("DELETE FROM training_logs WHERE trainee_id = ?", (user.id,))
+    cursor.execute("DELETE FROM exam_logs WHERE trainee_id = ?", (user.id,))
+    db.commit()
+
+    removed_roles = []
+
+    if remove_roles:
+        role_ids = [
+            TRAINEE_ROLE_ID,
+            CABIN_CREW_ROLE_ID,
+            GROUND_CREW_ROLE_ID,
+            FLIGHT_DECK_ROLE_ID,
+            HEALTH_SAFETY_ROLE_ID
+        ]
+
+        roles_to_remove = []
+
+        for role_id in role_ids:
+            role = interaction.guild.get_role(role_id)
+            if role and role in user.roles:
+                roles_to_remove.append(role)
+                removed_roles.append(role.name)
+
+        if roles_to_remove:
+            try:
+                await user.remove_roles(
+                    *roles_to_remove,
+                    reason="Education Institute registration deleted"
+                )
+            except discord.Forbidden:
+                await send_error(
+                    interaction,
+                    "Role Error",
+                    "The registration was deleted, but I could not remove the user's roles. Move my bot role above the trainee roles."
+                )
+                return
+
+    await send_log(
+        interaction.guild,
+        "Registration Deleted",
+        f"User: {user} (`{user.id}`)\n"
+        f"Deleted By: {interaction.user}\n"
+        f"Roles Removed: {', '.join(removed_roles) if removed_roles else 'None'}"
+    )
+
+    await send_success(
+        interaction,
+        "Registration Deleted",
+        f"{user.mention}'s registration, training logs, and examination logs have been deleted."
+    )
 
 
 @bot.tree.command(name="help", description="View Institute Core commands.")
