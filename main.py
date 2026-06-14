@@ -868,7 +868,7 @@ async def scheduletraining(
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
 
-    await sent.add_reaction(discord.PartialEmoji.from_str(I15))
+await sent.add_reaction(discord.PartialEmoji.from_str(I15))
 await sent.add_reaction(discord.PartialEmoji.from_str(I14))
 
     dm_embed = base_embed(
