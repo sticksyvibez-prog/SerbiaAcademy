@@ -11,16 +11,41 @@ from datetime import datetime
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-STAFF_ROLE_ID = 1500972974155632762
-LOG_CHANNEL_ID = 1513062138254594069
+AIR_SERBIA_BLUE = 0x0033A0
 
-TAIL = "<:tailnorse:1512838041901727794>"
-SCHEDULE = "<:schedulenorse:1512836519419707673>"
-INFO = "<:informationnorse:1512836210295312474>"
-TICK = "<:tick:1512838490054725742>"
-ACTION = "<:actionnorse:1512836253488255146>"
-ROBLOX = "<:robloxnorse:1512836297402880150>"
-LOGO = "<:logonorse:1513074203291811980>"
+TRAINER_ROLE_ID = 1512023301457973280
+TRAINEE_ROLE_ID = 1512023301445259316
+
+CABIN_CREW_ROLE_ID = 1512023301432541295
+GROUND_CREW_ROLE_ID = 1512023301432541294
+FLIGHT_DECK_ROLE_ID = 1512023301432541292
+HEALTH_SAFETY_ROLE_ID = 1512023301432541293
+
+REGISTRATION_REVIEW_CHANNEL_ID = 1515685364860325999
+LOG_CHANNEL_ID = 1515686645477937272
+
+AIR_SERBIA_TAIL = "<:airserbiatail:1513465478918438942>"
+AIR_SERBIA_LOGO = "<:airserbialogo:1513461621417054300>"
+ARROW = "<:institutearrow:1513466776212738119>"
+DOT = "<:institutedot:1513466696118177792>"
+I1 = "<:institute1:1513466762652418069>"
+I2 = "<:institute2:1513466746265145445>"
+I3 = "<:institute3:1513466731627286538>"
+I4 = "<:institute4:1513466717035298907>"
+I8 = "<:institute8:1512762370383020122>"
+I10 = "<:institute10:1512762340653924433>"
+I13 = "<:institute13:1512762266271879249>"
+I16 = "<:institute16:1512762179483336724>"
+I17 = "<:institute17:1512762153382318161>"
+BLANK = "<:blank:1513461587132944415>"
+ASLOGO = "<:ASlogo:1497713214417535056>"
+
+DEPARTMENT_ROLES = {
+    "Cabin Crew Trainee": CABIN_CREW_ROLE_ID,
+    "Ground Crew Trainee": GROUND_CREW_ROLE_ID,
+    "Flight Deck Trainee": FLIGHT_DECK_ROLE_ID,
+    "Health and Safety Department": HEALTH_SAFETY_ROLE_ID,
+}
 
 intents = discord.Intents.default()
 intents.members = True
@@ -28,29 +53,45 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-db = sqlite3.connect("norse_academy.db")
+db = sqlite3.connect("air_serbia_academy.db")
 cursor = db.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pending_registrations (
+    discord_id INTEGER PRIMARY KEY,
+    discord_username TEXT,
+    roblox_username TEXT,
+    roblox_id TEXT,
+    department TEXT,
+    submitted_at TEXT
+)
+""")
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS registrations (
     discord_id INTEGER PRIMARY KEY,
     discord_username TEXT,
+    roblox_username TEXT,
     roblox_id TEXT,
     department TEXT,
-    registered_at TEXT
+    registered_at TEXT,
+    status TEXT
 )
 """)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS trainings (
     training_id TEXT PRIMARY KEY,
-    department TEXT,
-    phase TEXT,
-    timestamp TEXT,
-    host_id INTEGER,
-    host_name TEXT,
     channel_id INTEGER,
-    trainee_role_id INTEGER
+    department_role_id INTEGER,
+    course TEXT,
+    phase TEXT,
+    game_link TEXT,
+    date_timestamp TEXT,
+    time_timestamp TEXT,
+    scheduled_by_id INTEGER,
+    scheduled_by_name TEXT,
+    created_at TEXT
 )
 """)
 
@@ -60,9 +101,9 @@ CREATE TABLE IF NOT EXISTS training_logs (
     training_id TEXT,
     trainee_id INTEGER,
     trainee_name TEXT,
-    status TEXT,
-    notes TEXT,
-    logged_by TEXT,
+    course_name TEXT,
+    trainer_id INTEGER,
+    trainer_name TEXT,
     logged_at TEXT
 )
 """)
@@ -72,10 +113,18 @@ CREATE TABLE IF NOT EXISTS exam_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trainee_id INTEGER,
     trainee_name TEXT,
-    exam_name TEXT,
-    score TEXT,
-    result TEXT,
-    examiner TEXT,
+    exam_type TEXT,
+    department TEXT,
+    grade TEXT,
+    points INTEGER,
+    max_points INTEGER,
+    percentage REAL,
+    outcome TEXT,
+    attempt_number INTEGER,
+    comments TEXT,
+    exam_link TEXT,
+    grader_id INTEGER,
+    grader_name TEXT,
     logged_at TEXT
 )
 """)
@@ -83,206 +132,413 @@ CREATE TABLE IF NOT EXISTS exam_logs (
 db.commit()
 
 
-def is_staff(member: discord.Member):
-    return any(role.id == STAFF_ROLE_ID for role in member.roles)
+def is_trainer(member: discord.Member):
+    return any(role.id == TRAINER_ROLE_ID for role in member.roles)
+
+
+def is_trainee(member: discord.Member):
+    return any(role.id == TRAINEE_ROLE_ID for role in member.roles)
 
 
 def make_training_id():
-    return "NTA-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    return "AST-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
 
 
-async def send_log(guild: discord.Guild, title: str, content: str):
+async def send_log(guild: discord.Guild, title: str, description: str):
     if not guild:
         return
     channel = guild.get_channel(LOG_CHANNEL_ID)
-    if channel:
-        await channel.send(f"**{title}**\n\n{content}")
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=AIR_SERBIA_BLUE,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Air Serbia Education Institute Logs")
+    await channel.send(embed=embed)
+
+
+def roblox_headshot(roblox_id: str):
+    return f"https://www.roblox.com/headshot-thumbnail/image?userId={roblox_id}&width=420&height=420&format=png"
+
+
+def roblox_profile(roblox_id: str):
+    return f"https://www.roblox.com/users/{roblox_id}/profile"
+
+
+async def send_registration_dm(member: discord.Member):
+    msg = f"""> {I13} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲**
+
+You have been **successfully** registered and verified within the Air Serbia Education Institute. We are delighted to welcome you and congratulate you on the beginning of your academy journey.
+
+> {I2} It is **essential** that you review the **[Central Hub](https://discord.com/channels/1512023301420224673/1512023301919084566)** to familiarize yourself with our academy policies, procedures, and regulations before attending any training sessions.
+
+Should you have any questions or require further assistance, please do not hesitate to contact an **Institute Officer**.
+
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+
+{BLANK}{BLANK}{ASLOGO} **Air Serbia** • *13 years of connecting people and creating memories.*
+"""
+    try:
+        await member.send(msg)
+    except:
+        pass
+
+
+async def send_rejection_dm(member: discord.Member):
+    msg = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Registration Update**
+
+We appreciate your interest in joining the **Air Serbia Education Institute**. After reviewing your registration submission, we regret to inform you that your request has not been approved at this time.
+
+> {ARROW} Should you believe this decision was made in error, or should you require clarification, please contact an **Institute Officer** through the appropriate support channels.
+
+Thank you for your time and interest in the Air Serbia Education Institute.
+
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+"""
+    try:
+        await member.send(msg)
+    except:
+        pass
+
+
+class RegistrationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="asei_register_approve")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_trainer(interaction.user):
+            await interaction.response.send_message("You do not have permission to approve registrations.", ephemeral=True)
+            return
+
+        embed = interaction.message.embeds[0]
+        discord_id = None
+
+        for field in embed.fields:
+            if field.name == "Discord ID":
+                discord_id = int(field.value)
+                break
+
+        if not discord_id:
+            await interaction.response.send_message("Could not find Discord ID in this registration.", ephemeral=True)
+            return
+
+        cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+        data = cursor.fetchone()
+
+        if not data:
+            await interaction.response.send_message("This registration is no longer pending.", ephemeral=True)
+            return
+
+        discord_id, discord_username, roblox_username, roblox_id, department, submitted_at = data
+        member = interaction.guild.get_member(discord_id)
+
+        if not member:
+            await interaction.response.send_message("Member not found in this server.", ephemeral=True)
+            return
+
+        trainee_role = interaction.guild.get_role(TRAINEE_ROLE_ID)
+        department_role = interaction.guild.get_role(DEPARTMENT_ROLES.get(department))
+
+        roles = []
+        if trainee_role:
+            roles.append(trainee_role)
+        if department_role:
+            roles.append(department_role)
+
+        if roles:
+            await member.add_roles(*roles, reason="Air Serbia Education Institute registration approved")
+
+        today = datetime.now().strftime("%d %B %Y")
+
+        cursor.execute(
+            "REPLACE INTO registrations VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (discord_id, discord_username, roblox_username, roblox_id, department, today, "Active")
+        )
+        cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+        db.commit()
+
+        await send_registration_dm(member)
+
+        embed.color = discord.Color.green()
+        embed.add_field(name="Status", value=f"Approved by {interaction.user.mention}", inline=False)
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.message.edit(embed=embed, view=self)
+
+        await send_log(
+            interaction.guild,
+            "Registration Approved",
+            f"Applicant: {member.mention}\nDepartment: {department}\nApproved By: {interaction.user.mention}"
+        )
+
+        await interaction.response.send_message("Registration approved and roles assigned.", ephemeral=True)
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, custom_id="asei_register_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_trainer(interaction.user):
+            await interaction.response.send_message("You do not have permission to reject registrations.", ephemeral=True)
+            return
+
+        embed = interaction.message.embeds[0]
+        discord_id = None
+
+        for field in embed.fields:
+            if field.name == "Discord ID":
+                discord_id = int(field.value)
+                break
+
+        if not discord_id:
+            await interaction.response.send_message("Could not find Discord ID in this registration.", ephemeral=True)
+            return
+
+        cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+        data = cursor.fetchone()
+
+        if data:
+            member = interaction.guild.get_member(discord_id)
+            cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (discord_id,))
+            db.commit()
+
+            if member:
+                await send_rejection_dm(member)
+
+        embed.color = discord.Color.red()
+        embed.add_field(name="Status", value=f"Rejected by {interaction.user.mention}", inline=False)
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.message.edit(embed=embed, view=self)
+
+        await send_log(
+            interaction.guild,
+            "Registration Rejected",
+            f"Applicant ID: `{discord_id}`\nRejected By: {interaction.user.mention}"
+        )
+
+        await interaction.response.send_message("Registration rejected.", ephemeral=True)
 
 
 @bot.event
 async def on_ready():
+    bot.add_view(RegistrationView())
     await bot.tree.sync()
     print(f"Logged in as {bot.user}")
 
 
-@bot.tree.command(name="register", description="Register yourself in Academy Core.")
+@bot.tree.command(name="register", description="Submit your Air Serbia Education Institute registration.")
 @app_commands.choices(department=[
     app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
-    app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
     app_commands.Choice(name="Ground Crew Trainee", value="Ground Crew Trainee"),
-    app_commands.Choice(name="Instructor", value="Instructor"),
-    app_commands.Choice(name="Academy Director", value="Academy Director"),
-    app_commands.Choice(name="Council Member", value="Council Member"),
+    app_commands.Choice(name="Flight Deck Trainee", value="Flight Deck Trainee"),
+    app_commands.Choice(name="Health and Safety Department", value="Health and Safety Department"),
 ])
 async def register(
     interaction: discord.Interaction,
-    discord_username: str,
+    roblox_username: str,
     roblox_id: str,
     department: app_commands.Choice[str]
 ):
-    today = datetime.now().strftime("%d %B %Y")
+    trainee_role = interaction.guild.get_role(TRAINEE_ROLE_ID)
+
+    if trainee_role and trainee_role in interaction.user.roles:
+        await interaction.response.send_message("You are already registered within the Air Serbia Education Institute.", ephemeral=True)
+        return
+
+    cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (interaction.user.id,))
+    if cursor.fetchone():
+        await interaction.response.send_message("Your registration is already pending review.", ephemeral=True)
+        return
+
+    submitted_at = datetime.now().strftime("%d %B %Y")
 
     cursor.execute(
-        "REPLACE INTO registrations VALUES (?, ?, ?, ?, ?)",
-        (
-            interaction.user.id,
-            discord_username,
-            roblox_id,
-            department.value,
-            today
-        )
+        "REPLACE INTO pending_registrations VALUES (?, ?, ?, ?, ?, ?)",
+        (interaction.user.id, str(interaction.user), roblox_username, roblox_id, department.value, submitted_at)
     )
     db.commit()
 
-    await send_log(
-        interaction.guild,
-        "NEW REGISTRATION",
-        f"User: {interaction.user.mention}\nDiscord Username: {discord_username}\nRoblox ID: {roblox_id}\nDepartment: {department.value}"
+    review_channel = interaction.guild.get_channel(REGISTRATION_REVIEW_CHANNEL_ID)
+
+    embed = discord.Embed(
+        title=f"{AIR_SERBIA_LOGO} Registration Review",
+        description="A new member has submitted an Education Institute registration.",
+        color=AIR_SERBIA_BLUE,
+        timestamp=discord.utils.utcnow()
     )
+    embed.add_field(name="Applicant", value=interaction.user.mention, inline=False)
+    embed.add_field(name="Discord Username", value=str(interaction.user), inline=True)
+    embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=True)
+    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
+    embed.add_field(name="Roblox ID", value=roblox_id, inline=True)
+    embed.add_field(name="Department", value=department.value, inline=False)
+    embed.set_thumbnail(url=roblox_headshot(roblox_id))
+    embed.set_footer(text="Air Serbia Education Institute Registration")
+
+    if review_channel:
+        await review_channel.send(embed=embed, view=RegistrationView())
 
     await interaction.response.send_message(
-        f"{TAIL} Registration complete. You may now use `/progress`.",
+        "Your registration has been submitted for review. Please wait for an Institute Officer to approve it.",
         ephemeral=True
     )
 
 
-@bot.tree.command(name="progress", description="View your academy progress.")
-async def progress(interaction: discord.Interaction):
+@bot.tree.command(name="profile", description="View your Air Serbia Education Institute profile.")
+async def profile(interaction: discord.Interaction):
+    if not is_trainee(interaction.user):
+        await interaction.response.send_message("You must complete registration before accessing your academy profile.", ephemeral=True)
+        return
+
     cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
     reg = cursor.fetchone()
 
     if not reg:
-        await interaction.response.send_message(
-            "You are not registered in the Academy database. Please use `/register` first.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("No academy profile was found for you.", ephemeral=True)
         return
 
-    cursor.execute("SELECT training_id, status FROM training_logs WHERE trainee_id = ?", (interaction.user.id,))
+    discord_id, discord_username, roblox_username, roblox_id, department, registered_at, status = reg
+
+    cursor.execute("SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ?", (interaction.user.id,))
     trainings = cursor.fetchall()
 
-    cursor.execute("SELECT exam_name, score, result FROM exam_logs WHERE trainee_id = ?", (interaction.user.id,))
+    cursor.execute("SELECT exam_type, outcome, percentage, grader_name FROM exam_logs WHERE trainee_id = ?", (interaction.user.id,))
     exams = cursor.fetchall()
 
-    training_text = "\n".join(
-        [f"{i+1}, `{t[0]}` — **{t[1]}**" for i, t in enumerate(trainings)]
-    ) or "No training attended yet."
+    training_text = "\n".join([f"{DOT} {c} • {d}" for c, d in trainings]) or f"{DOT} No training attendance recorded."
 
-    exam_text = "\n".join(
-        [f"{i+1}, {e[0]} — **{e[2]}** — Score: {e[1]}" for i, e in enumerate(exams)]
-    ) or "No exams recorded yet."
+    exam_text = "\n".join([f"{DOT} {e[0]} — **{e[1]}** ({round(e[2], 2)}%)" for e in exams]) or f"{DOT} No examination participation recorded."
 
-    message = f"""** {LOGO} Your Progress**
+    latest_examiner = exams[-1][3] if exams else "None"
+    latest_grade = "None"
 
-> Training Attended
+    cursor.execute("SELECT grade FROM exam_logs WHERE trainee_id = ? ORDER BY id DESC LIMIT 1", (interaction.user.id,))
+    grade_data = cursor.fetchone()
+    if grade_data:
+        latest_grade = grade_data[0]
+
+    embed = discord.Embed(
+        title=f"{I17} {roblox_username} Profile",
+        color=AIR_SERBIA_BLUE,
+        timestamp=discord.utils.utcnow()
+    )
+
+    embed.set_author(
+        name=f"{interaction.user.display_name}'s Academy Profile",
+        icon_url=interaction.user.display_avatar.url
+    )
+    embed.set_thumbnail(url=roblox_headshot(roblox_id))
+
+    embed.description = f"""> {I8} **Training Attendance**
 {training_text}
 
-> Exams
+> {I10} **Examination Participation**
 {exam_text}
 
-{TAIL} We wish you the best of luck!
+> {I10} **Notes**
+{DOT} Department: {department}
+{DOT} Registered: {registered_at}
+{DOT} Academy Status: {status}
+{DOT} Latest Grade: {latest_grade}
+{DOT} Latest Examiner: {latest_examiner}
+
+{AIR_SERBIA_TAIL} We wish you the best of luck!
+
+-# [Profile Link]({roblox_profile(roblox_id)})
 """
 
-    await interaction.response.send_message(message, ephemeral=True)
+    embed.set_footer(text="Air Serbia Education Institute")
+    await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="createtraining", description="Create a formatted Norse training announcement.")
-@app_commands.describe(
-    channel="Channel where the announcement will be posted",
-    trainee_role="Role to ping for the training",
-    department="Training department",
-    phase="Training stage/phase number",
-    host="Training host",
-    timestamp="Discord timestamp number only, example: 1780759800"
-)
-@app_commands.choices(department=[
-    app_commands.Choice(name="Cabin Crew", value="Cabin Crew"),
-    app_commands.Choice(name="Flight Deck", value="Flight Deck"),
-    app_commands.Choice(name="Ground Crew", value="Ground Crew"),
-    app_commands.Choice(name="Academy Services", value="Academy Services")
-])
-async def createtraining(
+@bot.tree.command(name="scheduletraining", description="Schedule a new course training.")
+async def scheduletraining(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
-    trainee_role: discord.Role,
-    department: app_commands.Choice[str],
+    department_role: discord.Role,
+    course: str,
     phase: str,
-    host: discord.Member,
-    timestamp: str
+    game_link: str,
+    date_timestamp: str,
+    time_timestamp: str
 ):
-    if not is_staff(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+    if not is_trainer(interaction.user):
+        await interaction.response.send_message("You do not have permission to schedule trainings.", ephemeral=True)
         return
 
     training_id = make_training_id()
-
-    message = f"""** {TAIL} Training Session Scheduled**
--# A newly scheduled training session
-
-{trainee_role.mention}
-
-{SCHEDULE} A new **Stage {phase}** training session has been scheduled for **<t:{timestamp}:F>**.
-
-> **Department:** {department.value}
-> **Host:** {host.mention}
-> **Training ID:** `{training_id}`
-
-{INFO} The training server will unlock at the scheduled time. Trainees are expected to join promptly and follow all instructions issued by the host.
-
-{TICK} Ensure you react below if you are able to attend this session.
-"""
-
-    sent = await channel.send(message)
-    await sent.add_reaction("✅")
+    created_at = datetime.now().strftime("%d %B %Y")
 
     cursor.execute(
-        "INSERT INTO trainings VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO trainings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             training_id,
-            department.value,
-            phase,
-            timestamp,
-            host.id,
-            str(host),
             channel.id,
-            trainee_role.id
+            department_role.id,
+            course,
+            phase,
+            game_link,
+            date_timestamp,
+            time_timestamp,
+            interaction.user.id,
+            str(interaction.user),
+            created_at
         )
     )
     db.commit()
 
+    message = f"""{department_role.mention}
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Schedule**
+{BLANK}{BLANK} ◜*a new course training has been scheduled*
+
+*Salutations, trainees!* It gives us pleasure to announce that a new **{course}** training will be taking place at __[Location]({game_link})__.
+
+> {ARROW} In case you are unable to attend this training programme, please ensure that you communicate this to a member of the Institute so that an alternative training session may be arranged according to your timezone.
+
+{BLANK} {I16} **<t:{date_timestamp}:D>, <t:{time_timestamp}:t>**
+{DOT} Upon the __unlock__ of the training, you will be provided **10 minutes** to join before the server commences __lock__ and the training proceedings begin.
+
+> ◜*If you wish to attend, please allocate by utilising the appropriate reaction below.*
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+"""
+
+    sent = await channel.send(message)
+    await sent.add_reaction("✅")
+    await sent.add_reaction("❌")
+
     try:
-        await host.send(
-            f"{TAIL} Your training has been created.\n\n"
-            f"Training ID: `{training_id}`\n"
-            f"Department: {department.value}\n"
-            f"Stage: {phase}\n"
-            f"Time: <t:{timestamp}:F>"
+        await interaction.user.send(
+            f"{AIR_SERBIA_LOGO} Training successfully scheduled.\n\nTraining ID: `{training_id}`\nCourse: {course}\nPhase: {phase}"
         )
     except:
         pass
 
     await send_log(
         interaction.guild,
-        "TRAINING CREATED",
-        f"Training ID: `{training_id}`\nDepartment: {department.value}\nStage: {phase}\nHost: {host.mention}\nCreated By: {interaction.user.mention}\nChannel: {channel.mention}\nPing Role: {trainee_role.mention}"
+        "Training Scheduled",
+        f"Training ID: `{training_id}`\nCourse: {course}\nPhase: {phase}\nScheduled By: {interaction.user}"
     )
 
-    await interaction.response.send_message(
-        f"Training posted. Training ID: `{training_id}`",
-        ephemeral=True
-    )
+    await interaction.response.send_message(f"Training scheduled. Training ID: `{training_id}`", ephemeral=True)
 
 
-@bot.tree.command(name="jointime", description="Open join time for a training.")
-async def jointime(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    trainee_role: discord.Role,
-    training_id: str,
-    link: str
-):
-    if not is_staff(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+@bot.tree.command(name="jointime", description="Open join time for a scheduled training.")
+async def jointime(interaction: discord.Interaction, training_id: str):
+    if not is_trainer(interaction.user):
+        await interaction.response.send_message("You do not have permission to open join time.", ephemeral=True)
         return
 
     cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
@@ -292,69 +548,57 @@ async def jointime(
         await interaction.response.send_message("Training ID not found.", ephemeral=True)
         return
 
-    training_id, department, phase, timestamp, host_id, host_name, old_channel_id, old_role_id = data
+    training_id, channel_id, department_role_id, course, phase, game_link, date_timestamp, time_timestamp, scheduled_by_id, scheduled_by_name, created_at = data
 
-    message = f"""** {TAIL} Training Session Open **
--# Join time has officially commenced
+    channel = interaction.guild.get_channel(channel_id)
 
-{trainee_role.mention}
+    message = f"""<@&{department_role_id}>
 
-{INFO} The **Stage {phase}** training session is now accepting attendees.
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Commencement**
+{BLANK}{BLANK}◜*we recommend that you review the information below*
 
-> **Department:** {department}
-> **Host:** <@{host_id}>
-> **[Training]({link})**
+> {I16} **All** participants are required to join promptly and ensure full attendance throughout.
+{ARROW} **[Join Training]({game_link})**
 
-{ROBLOX} The training server will lock in **5 minutes**. Late arrivals will not be admitted unless authorized by the training host.
+{DOT} You are provided **10 minutes** to join before the server commences __lock__ and the training proceedings begin.
 
--# Please proceed to the training server immediately.
+> {BLANK} *Please remain professional throughout the entirety of the session. Failure to do so may result in disciplinary action.*
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
 """
 
     await channel.send(message)
 
     await send_log(
         interaction.guild,
-        "JOIN TIME OPENED",
-        f"Training ID: `{training_id}`\nDepartment: {department}\nStage: {phase}\nOpened By: {interaction.user.mention}\nChannel: {channel.mention}\nPing Role: {trainee_role.mention}"
+        "Join Time Opened",
+        f"Training ID: `{training_id}`\nOpened By: {interaction.user}"
     )
 
-    await interaction.response.send_message("Join time announcement posted.", ephemeral=True)
+    await interaction.response.send_message("Join time posted.", ephemeral=True)
 
 
-@bot.tree.command(name="logtraining", description="Log trainee attendance.")
-@app_commands.choices(status=[
-    app_commands.Choice(name="Attended", value="ATTENDED"),
-    app_commands.Choice(name="Absent", value="ABSENT"),
-    app_commands.Choice(name="Failed", value="FAILED"),
-])
+@bot.tree.command(name="logtraining", description="Log training attendance for a trainee.")
 async def logtraining(
     interaction: discord.Interaction,
     training_id: str,
     trainee: discord.Member,
-    status: app_commands.Choice[str],
-    notes: str = "No notes provided."
+    course_name: str
 ):
-    if not is_staff(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
-        return
-
-    cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
-    training = cursor.fetchone()
-
-    if not training:
-        await interaction.response.send_message("Training ID not found.", ephemeral=True)
+    if not is_trainer(interaction.user):
+        await interaction.response.send_message("You do not have permission to log trainings.", ephemeral=True)
         return
 
     today = datetime.now().strftime("%d %B %Y")
 
     cursor.execute(
-        "INSERT INTO training_logs (training_id, trainee_id, trainee_name, status, notes, logged_by, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO training_logs (training_id, trainee_id, trainee_name, course_name, trainer_id, trainer_name, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             training_id,
             trainee.id,
             str(trainee),
-            status.value,
-            notes,
+            course_name,
+            interaction.user.id,
             str(interaction.user),
             today
         )
@@ -363,242 +607,191 @@ async def logtraining(
 
     await send_log(
         interaction.guild,
-        "TRAINING LOGGED",
-        f"Training ID: `{training_id}`\nTrainee: {trainee.mention}\nStatus: {status.value}\nLogged By: {interaction.user.mention}\nNotes: {notes}"
+        "Training Attendance Logged",
+        f"Trainee: {trainee.mention}\nCourse: {course_name}\nTraining ID: `{training_id}`\nTrainer: {interaction.user}"
     )
 
-    await interaction.response.send_message(f"Training log saved for {trainee.mention}.", ephemeral=True)
+    await interaction.response.send_message("Training attendance logged.", ephemeral=True)
 
 
-@bot.tree.command(name="logexam", description="Log an exam result without DM.")
+@bot.tree.command(name="result", description="Send examination results to a trainee.")
 @app_commands.choices(
-    exam_name=[
-        app_commands.Choice(name="Theory Examination", value="Theory Examination"),
-        app_commands.Choice(name="Universal Examination", value="Universal Examination")
+    exam_type=[
+        app_commands.Choice(name="Theory Examination", value="Theory"),
+        app_commands.Choice(name="Course Examination", value="Course")
     ],
     outcome=[
-        app_commands.Choice(name="Passed", value="PASSED"),
-        app_commands.Choice(name="Failed", value="FAILED")
-    ]
-)
-async def logexam(
-    interaction: discord.Interaction,
-    trainee: discord.Member,
-    exam_name: app_commands.Choice[str],
-    score: str,
-    outcome: app_commands.Choice[str]
-):
-    if not is_staff(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
-        return
-
-    today = datetime.now().strftime("%d %B %Y")
-
-    cursor.execute(
-        "INSERT INTO exam_logs (trainee_id, trainee_name, exam_name, score, result, examiner, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            trainee.id,
-            str(trainee),
-            exam_name.value,
-            score,
-            outcome.value,
-            str(interaction.user),
-            today
-        )
-    )
-    db.commit()
-
-    await send_log(
-        interaction.guild,
-        "EXAM LOGGED",
-        f"Trainee: {trainee.mention}\nExam: {exam_name.value}\nScore: {score}\nResult: {outcome.value}\nExaminer: {interaction.user.mention}"
-    )
-
-    await interaction.response.send_message("Exam log saved.", ephemeral=True)
-
-
-@bot.tree.command(name="result", description="Send examination result to a trainee.")
-@app_commands.choices(
-    exam_name=[
-        app_commands.Choice(name="Theory Examination", value="Theory Examination"),
-        app_commands.Choice(name="Universal Examination", value="Universal Examination")
-    ],
-    outcome=[
-        app_commands.Choice(name="Passed", value="PASSED"),
-        app_commands.Choice(name="Failed", value="FAILED")
+        app_commands.Choice(name="Pass", value="PASSED"),
+        app_commands.Choice(name="Fail", value="FAILED")
     ]
 )
 async def result(
     interaction: discord.Interaction,
     trainee: discord.Member,
-    exam_name: app_commands.Choice[str],
-    score: str,
-    outcome: app_commands.Choice[str]
+    exam_type: app_commands.Choice[str],
+    department: str,
+    grade: str,
+    points: int,
+    max_points: int,
+    outcome: app_commands.Choice[str],
+    attempt_number: int,
+    comments: str,
+    exam_link: str
 ):
-    if not is_staff(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+    if not is_trainer(interaction.user):
+        await interaction.response.send_message("You do not have permission to issue results.", ephemeral=True)
         return
 
-    date = datetime.now().strftime("%d %B %Y")
+    percentage = (points / max_points) * 100
+    today = datetime.now().strftime("%d %B %Y")
+    grader = str(interaction.user)
 
     cursor.execute(
-        "INSERT INTO exam_logs (trainee_id, trainee_name, exam_name, score, result, examiner, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO exam_logs (trainee_id, trainee_name, exam_type, department, grade, points, max_points, percentage, outcome, attempt_number, comments, exam_link, grader_id, grader_name, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             trainee.id,
             str(trainee),
-            exam_name.value,
-            score,
+            exam_type.value,
+            department,
+            grade,
+            points,
+            max_points,
+            percentage,
             outcome.value,
-            str(interaction.user),
-            date
+            attempt_number,
+            comments,
+            exam_link,
+            interaction.user.id,
+            grader,
+            today
         )
     )
     db.commit()
 
-    if outcome.value == "PASSED":
-        dm = f"""## {TAIL} Results
--# Your results of {exam_name.value}
+    if outcome.value == "PASSED" and exam_type.value == "Theory":
+        dm = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
 
-NORSE Training Division, {date}
+{BLANK}{BLANK} ⦧ **Theory Examination Results**
 
-{INFO} Greetings! {trainee.mention},
+On behalf of the **Air Serbia Instructional Board**, we are delighted to congratulate you on successfully passing your **Theory Examination** within the **{department}**.
 
-We hope this message finds you well. This message is here to deliver your results for your **{exam_name.value}**.
+> {DOT} **Grade:** {grade}
+> {DOT} **Score:** {points}/{max_points} ({round(percentage, 2)}%)
+> {DOT} **Attempt:** {attempt_number}
+> {DOT} **Graded By:** {grader}
 
-{ACTION} Score: {score}
-{ACTION} Result: PASSED
+> {ARROW} **Comments:** {comments}
 
-Congratulations on successfully completing your examination. Your performance has met the standards required by the NORSE Training Division, and your academy record has been updated accordingly.
+> {I1} Your performance demonstrates a strong understanding of the theoretical knowledge required by the Air Serbia Education Institute. Your academy record has been updated successfully.
 
-We wish you the very best as you continue your progression within Norse Atlantic Airways.
+We are confident that you will continue to perform to the highest standards throughout your academy journey.
 
-Kind regards,
+> {I3} **Congratulations** on your accomplishment and continued dedication to the mission of the Air Serbia Education Institute.
 
-NORSE Training Division
+{DOT} **[Your Examination]({exam_link})**
+
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+
+{BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
+"""
+
+    elif outcome.value == "PASSED" and exam_type.value == "Course":
+        dm = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
+
+{BLANK}{BLANK} ⦧ **Course 1 Results**
+
+On behalf of the **Air Serbia Instructional Board**, we would like to sincerely congratulate you on the successful completion of your **Course 1 Examination**.
+
+> We are pleased to inform you that you have **passed** your **Course 1 Examination**. Congratulations on this outstanding achievement. Below are the official results recorded by your examiner.
+
+> {DOT} **Department:** {department}
+> {DOT} **Grade:** {grade}
+> {DOT} **Score:** {points}/{max_points} ({round(percentage, 2)}%)
+> {DOT} **Attempt:** {attempt_number}
+> {DOT} **Graded By:** {grader}
+
+> {ARROW} **Comments:** {comments}
+
+> {I1} This feedback has been provided to support your continued development and assist you in achieving an even higher standard during future evaluations. Your final academy ranking will be assigned shortly and will determine your progression to **Course 2** within your assigned department.
+
+> {ARROW} Successful completion of this course authorizes you to continue your training journey within the Air Serbia Education Institute. Please await further instructions from an **Institute Officer** regarding your progression.
+
+> {I3} **Congratulations** on your accomplishment and your continued dedication to the mission of the Air Serbia Education Institute.
+
+{DOT} **[Your Examination]({exam_link})**
+
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+
+{BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
 """
     else:
-        dm = f"""## {TAIL} Results
--# Your results of {exam_name.value}
+        dm = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Results**
+{BLANK}{BLANK} ⦧ *Your Course Examination results*
 
-NORSE Training Division, {date}
+On behalf of the **Air Serbia Instructional Board**, we regret to inform you that your performance in the Course Examination has __not met the required__ standard for a successful pass.
 
-{INFO} Greetings! {trainee.mention},
+> After a __thorough evaluation__ of your submitted answers, it has been determined that the minimum criteria necessary for progression have not been fully satisfied at this time.
 
-We hope this message finds you well. This message is here to deliver your results for your **{exam_name.value}**. We do not provide feedback in this instance.
+> {ARROW} **{comments}**
 
-{ACTION} Score: {score}
-{ACTION} Result: FAILED
+> {I4} This feedback is __intended__ to assist you in identifying areas that require improvement and to support your preparation for any *future attempts*. We **strongly** encourage you to review the training material carefully and focus on strengthening the clarity, completeness, and precision of your responses.
 
-You will soon be dismissed from the program for an unsuccessful second attempt of your examination. If you have any questions regarding anything mentioned above, please alert your examiner immediately.
+{ARROW} Please be **advised** that your current result does not permit progression to the next stage at this time. Further instructions regarding a possible retake or additional training requirements may be provided by an **Institute Officer** in due course.
 
-Kind regards,
+> {DOT} **[Your Examination]({exam_link})**
 
-NORSE Training Division
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+{BLANK}{BLANK} __Board of Learning and Teaching__, Institute Headquarters
 """
 
     try:
         await trainee.send(dm)
     except:
-        await interaction.response.send_message("Could not DM the trainee. Result was still saved.", ephemeral=True)
-        return
+        pass
+
+    if outcome.value == "FAILED" and attempt_number >= 2:
+        try:
+            await trainee.kick(reason=f"Failed {exam_type.value} Examination on second attempt.")
+        except:
+            pass
 
     await send_log(
         interaction.guild,
-        "RESULT ISSUED",
-        f"Trainee: {trainee.mention}\nExam: {exam_name.value}\nScore: {score}\nResult: {outcome.value}\nExaminer: {interaction.user.mention}"
+        "Examination Result Issued",
+        f"Trainee: {trainee.mention}\nExam: {exam_type.value}\nDepartment: {department}\nScore: {points}/{max_points} ({round(percentage, 2)}%)\nResult: {outcome.value}\nAttempt: {attempt_number}\nGraded By: {interaction.user}"
     )
 
-    if outcome.value == "FAILED":
-        try:
-            await trainee.kick(reason=f"Failed {exam_name.value}")
-        except:
-            await interaction.response.send_message(
-                "Result sent, but I could not kick the trainee. Check bot permissions.",
-                ephemeral=True
-            )
-            return
-
-    await interaction.response.send_message(
-        f"Result sent to {trainee.mention} and added to progress.",
-        ephemeral=True
-    )
+    await interaction.response.send_message("Result issued and saved.", ephemeral=True)
 
 
-@bot.tree.command(name="dm", description="Send an academy DM through the bot.")
-async def dm(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    message: str
-):
-    if not is_staff(interaction.user):
+@bot.tree.command(name="dm", description="Send an official institute DM to a member.")
+async def dm(interaction: discord.Interaction, user: discord.Member, message: str):
+    if not is_trainer(interaction.user):
         await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
         return
 
-    final_message = f"""** {TAIL} Message from the Academy**
+    final = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Official Message**
 
 {message}
+
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲**
 """
 
     try:
-        await user.send(final_message)
+        await user.send(final)
     except:
         await interaction.response.send_message("Could not DM this user.", ephemeral=True)
         return
 
-    await send_log(
-        interaction.guild,
-        "ACADEMY DM SENT",
-        f"Recipient: {user.mention}\nSent By: {interaction.user.mention}\nMessage:\n{message}"
-    )
-
-    await interaction.response.send_message("DM sent successfully.", ephemeral=True)
-
-
-@bot.tree.command(name="canceltraining", description="Cancel a training session.")
-async def canceltraining(
-    interaction: discord.Interaction,
-    training_id: str,
-    reason: str
-):
-    if not is_staff(interaction.user):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
-        return
-
-    cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
-    data = cursor.fetchone()
-
-    if not data:
-        await interaction.response.send_message("Training ID not found.", ephemeral=True)
-        return
-
-    training_id, department, phase, timestamp, host_id, host_name, channel_id, trainee_role_id = data
-    channel = interaction.guild.get_channel(channel_id)
-
-    if channel:
-        await channel.send(
-            f"""** {TAIL} Training Session Cancelled**
--# A scheduled training session has been cancelled
-
-<@&{trainee_role_id}>
-
-{INFO} The **Stage {phase}** training session has been cancelled.
-
-> **Department:** {department}
-> **Host:** <@{host_id}>
-> **Training ID:** `{training_id}`
-> **Reason:** {reason}
-
--# Please await further updates from Academy Services.
-"""
-        )
-
-    await send_log(
-        interaction.guild,
-        "TRAINING CANCELLED",
-        f"Training ID: `{training_id}`\nDepartment: {department}\nStage: {phase}\nCancelled By: {interaction.user.mention}\nReason: {reason}"
-    )
-
-    await interaction.response.send_message("Training cancelled.", ephemeral=True)
+    await send_log(interaction.guild, "Official DM Sent", f"Recipient: {user.mention}\nSent By: {interaction.user}")
+    await interaction.response.send_message("DM sent.", ephemeral=True)
 
 
 bot.run(TOKEN)
