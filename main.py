@@ -1343,6 +1343,130 @@ async def deleteregistration(
     )
 
 
+@bot.tree.command(name="startexamroom", description="Randomly assign a trainee to an examination room.")
+async def startexamroom(
+    interaction: discord.Interaction,
+    trainee: discord.Member
+):
+    if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+        await send_error(interaction, "Permission Denied", "Only Institute Trainers may start an exam room.")
+        return
+
+    exam_rooms = []
+
+    for channel in interaction.guild.voice_channels:
+        match = re.fullmatch(r"room-(\d+)", channel.name.lower())
+        if match:
+            room_number = match.group(1)
+            exam_rooms.append((channel, room_number))
+
+    if not exam_rooms:
+        await send_error(
+            interaction,
+            "No Exam Rooms Found",
+            "I could not find any voice channels named `room-1`, `room-2`, `room-3`, etc."
+        )
+        return
+
+    empty_rooms = [(channel, number) for channel, number in exam_rooms if len(channel.members) == 0]
+
+    if empty_rooms:
+        selected_room, room_number = random.choice(empty_rooms)
+    else:
+        selected_room, room_number = random.choice(exam_rooms)
+
+    exam_text_channel = discord.utils.get(
+        interaction.guild.text_channels,
+        name=f"exam-{room_number}"
+    )
+
+    if not exam_text_channel:
+        await send_error(
+            interaction,
+            "Exam Channel Not Found",
+            f"I found `{selected_room.name}`, but I could not find the matching text channel `exam-{room_number}`."
+        )
+        return
+
+    try:
+        voice_client = interaction.guild.voice_client
+
+        if voice_client and voice_client.is_connected():
+            await voice_client.move_to(selected_room)
+        else:
+            await selected_room.connect(self_deaf=True)
+
+    except discord.Forbidden:
+        await send_error(
+            interaction,
+            "Missing Permission",
+            f"I do not have permission to connect to {selected_room.mention}."
+        )
+        return
+
+    except Exception as e:
+        await send_error(
+            interaction,
+            "Voice Connection Failed",
+            f"I could not join the selected exam room.\n\nError: `{e}`"
+        )
+        return
+
+    try:
+        await trainee.move_to(selected_room, reason="Trainee assigned to examination room")
+    except Exception:
+        pass
+
+    try:
+        ghost_ping = await exam_text_channel.send(interaction.user.mention)
+        await ghost_ping.delete(delay=1)
+    except Exception:
+        pass
+
+    embed = base_embed(
+        f"{I17} Examination Centre",
+        f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Examination Centre**
+
+{BLANK}{BLANK} ⦧ *Your examination room has been prepared.*
+
+{DOT} **Trainee:** {trainee.mention}
+{DOT} **Examination Room:** {selected_room.mention}
+{DOT} **Assigned Trainer:** {interaction.user.mention}
+
+> {ARROW} Please remain present within your assigned voice room for the duration of the examination session.
+
+> {I16} Your assigned trainer will be sharing the official examination link with you shortly. Please wait patiently and do not leave the examination room unless instructed by an **Institute Officer**.
+
+> {I4} Leaving the examination room without permission may result in your examination being reviewed, cancelled, or marked invalid.
+
+**ᴡɪᴛʜ ʀᴇɢᴀʀᴅꜱ,**
+
+> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** ⦧ *Reaching new heights, revolutionising the industry*
+"""
+    )
+
+    await exam_text_channel.send(
+        content=trainee.mention,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(users=True)
+    )
+
+    await send_log(
+        interaction.guild,
+        "Examination Room Started",
+        f"Trainee: {trainee} (`{trainee.id}`)\n"
+        f"Voice Room: {selected_room.name}\n"
+        f"Text Channel: #{exam_text_channel.name}\n"
+        f"Trainer: {interaction.user}"
+    )
+
+    await send_success(
+        interaction,
+        "Exam Room Started",
+        f"{trainee.mention} has been assigned to {selected_room.mention}. The examination notice was posted in {exam_text_channel.mention}."
+    )
+
+
 @bot.tree.command(name="help", description="View Institute Core commands.")
 async def help_command(interaction: discord.Interaction):
     description = f"""{AIR_SERBIA_LOGO} **Institute Core Command Directory**
