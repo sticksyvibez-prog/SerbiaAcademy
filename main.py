@@ -1,4 +1,5 @@
 import os
+import asyncio
 import re
 import random
 import string
@@ -270,6 +271,49 @@ async def send_error(interaction: discord.Interaction, title: str, description: 
 async def send_success(interaction: discord.Interaction, title: str, description: str, ephemeral: bool = True):
     embed = base_embed(f"{I3} {title}", description)
     await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
+
+def progress_embed(title: str, steps: list[str], current_index: int, status: str = "running", note: str = "") -> discord.Embed:
+    lines = []
+
+    for index, step in enumerate(steps):
+        if status == "failed" and index == current_index:
+            lines.append(f"{I4} **{step}**")
+        elif status == "done" or index < current_index:
+            lines.append(f"{I15} {step}")
+        elif index == current_index:
+            lines.append(f"{I16} **{step}**")
+        else:
+            lines.append(f"{DOT} {step}")
+
+    if note:
+        lines.append(f"\n> {ARROW} {note}")
+
+    return base_embed(title, "\n".join(lines))
+
+
+async def start_progress(interaction: discord.Interaction, title: str, steps: list[str]) -> discord.Message:
+    embed = progress_embed(title, steps, 0)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+    message = await interaction.original_response()
+    await asyncio.sleep(0.45)
+    return message
+
+
+async def update_progress(message: discord.Message, title: str, steps: list[str], current_index: int, note: str = ""):
+    embed = progress_embed(title, steps, current_index, note=note)
+    await message.edit(embed=embed)
+    await asyncio.sleep(0.45)
+
+
+async def finish_progress(message: discord.Message, title: str, steps: list[str], note: str = ""):
+    embed = progress_embed(title, steps, len(steps) - 1, status="done", note=note)
+    await message.edit(embed=embed)
+
+
+async def fail_progress(message: discord.Message, title: str, steps: list[str], failed_index: int, note: str):
+    embed = progress_embed(title, steps, failed_index, status="failed", note=note)
+    await message.edit(embed=embed)
 
 
 # ============================================================
@@ -720,6 +764,7 @@ async def send_profile_embed(interaction: discord.Interaction):
 # COMMANDS
 # ============================================================
 
+
 @bot.tree.command(name="register", description="Submit your Education Institute registration.")
 @app_commands.choices(department=[
     app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
@@ -733,43 +778,43 @@ async def register(
     roblox_id: str,
     department: app_commands.Choice[str]
 ):
+    steps = [
+        "Starting registration request",
+        "Checking academy eligibility",
+        "Verifying Roblox User ID",
+        "Saving registration request",
+        "Sending request to trainers",
+        "Registration submitted successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Registration Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Registration Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member):
-        await send_error(interaction, "Server Only", "This command can only be used inside the server.")
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "This command can only be used inside the server.")
         return
 
     if has_institute_role(interaction.user):
-        await send_error(
-            interaction,
-            "Already Registered",
-            "You are already registered or already hold an Institute role."
-        )
-        return
-
-    if not re.fullmatch(r"\d{2,20}", roblox_id):
-        await send_error(
-            interaction,
-            "Invalid Roblox User ID",
-            "Please enter your numeric Roblox User ID, not your Roblox username."
-        )
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "You are already registered or already hold an Institute role.")
         return
 
     cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
     if cursor.fetchone():
-        await send_error(
-            interaction,
-            "Already Registered",
-            "You already have an approved Education Institute profile."
-        )
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "You already have an approved Education Institute profile.")
         return
 
     cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (interaction.user.id,))
     if cursor.fetchone():
-        await send_error(
-            interaction,
-            "Registration Pending",
-            "Your registration is already pending review by an Institute Officer."
-        )
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "Your registration is already pending review by an Institute Officer.")
         return
+
+    await update_progress(progress_message, f"{I17} Registration Progress", steps, 2)
+
+    if not re.fullmatch(r"\d{2,20}", roblox_id):
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 2, "Please enter your numeric Roblox User ID, not your Roblox username.")
+        return
+
+    await update_progress(progress_message, f"{I17} Registration Progress", steps, 3)
 
     submitted_at = now_text()
 
@@ -786,6 +831,8 @@ async def register(
         )
     )
     db.commit()
+
+    await update_progress(progress_message, f"{I17} Registration Progress", steps, 4)
 
     review_channel = interaction.guild.get_channel(REGISTRATION_REVIEW_CHANNEL_ID)
     headshot_url = await get_roblox_headshot_url(roblox_id)
@@ -805,22 +852,241 @@ async def register(
 
     if review_channel:
         await review_channel.send(embed=embed, view=RegistrationView())
+    else:
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 4, "The registration review channel could not be found. Please contact an Institute Officer.")
+        return
 
-    await send_success(
-        interaction,
-        "Registration Submitted",
+    await finish_progress(
+        progress_message,
+        f"{I17} Registration Progress",
+        steps,
         "Your registration has been submitted for review. Please wait for an Institute Officer to approve it."
     )
 
 
+
 @bot.tree.command(name="profile", description="View your Air Serbia Education Institute profile.")
 async def profile(interaction: discord.Interaction):
-    await send_profile_embed(interaction)
+    steps = [
+        "Opening academy profile",
+        "Checking registration status",
+        "Loading training records",
+        "Loading examination records",
+        "Fetching Roblox profile image",
+        "Profile prepared successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Profile Progress", steps)
+
+    if not isinstance(interaction.user, discord.Member):
+        await fail_progress(progress_message, f"{I17} Profile Progress", steps, 1, "This command can only be used inside the server.")
+        return
+
+    await update_progress(progress_message, f"{I17} Profile Progress", steps, 1)
+
+    if not is_trainee(interaction.user):
+        await fail_progress(progress_message, f"{I17} Profile Progress", steps, 1, "You must complete registration before accessing your academy profile.")
+        return
+
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    reg = cursor.fetchone()
+
+    if not reg:
+        await fail_progress(progress_message, f"{I17} Profile Progress", steps, 1, "No approved academy profile was found for you.")
+        return
+
+    (
+        discord_id,
+        discord_username,
+        discord_display_name,
+        roblox_username,
+        roblox_id,
+        department,
+        registered_at,
+        status
+    ) = reg
+
+    await update_progress(progress_message, f"{I17} Profile Progress", steps, 2)
+
+    cursor.execute(
+        "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
+        (interaction.user.id,)
+    )
+    trainings = cursor.fetchall()
+
+    await update_progress(progress_message, f"{I17} Profile Progress", steps, 3)
+
+    cursor.execute("""
+    SELECT exam_type, outcome, percentage, grade, grader_name, logged_at
+    FROM exam_logs
+    WHERE trainee_id = ?
+    ORDER BY id ASC
+    """, (interaction.user.id,))
+    exams = cursor.fetchall()
+
+    await update_progress(progress_message, f"{I17} Profile Progress", steps, 4)
+
+    training_text = "\n".join(
+        [f"{DOT} {course} • {date}" for course, date in trainings]
+    ) or f"{DOT} No training attendance recorded."
+
+    exam_text = "\n".join(
+        [
+            f"{DOT} {exam_type} — **{outcome}** • {round(percentage, 2)}% • {date}"
+            for exam_type, outcome, percentage, grade, grader, date in exams
+        ]
+    ) or f"{DOT} No examination participation recorded."
+
+    latest_grade = "None"
+    latest_examiner = "None"
+
+    if exams:
+        latest_grade = exams[-1][3]
+        latest_examiner = exams[-1][4]
+
+    headshot_url = await get_roblox_headshot_url(roblox_id)
+
+    embed = base_embed(
+        f"{I17} {roblox_username} Profile",
+        f"""> {I8} **Training Attendance**
+{training_text}
+
+> {I10} **Examination Participation**
+{exam_text}
+
+> {I10} **Notes**
+{DOT} Warnings: None
+{DOT} Department: {department}
+{DOT} Registered: {registered_at}
+{DOT} Academy Status: {status}
+{DOT} Latest Grade: {latest_grade}
+{DOT} Latest Examiner: {latest_examiner}
+
+{AIR_SERBIA_TAIL} We wish you the best of luck!
+
+[Profile Link]({roblox_profile_url(roblox_id)})
+"""
+    )
+
+    embed.set_author(
+        name=f"{interaction.user.display_name}'s Academy Profile",
+        icon_url=interaction.user.display_avatar.url
+    )
+    embed.set_thumbnail(url=headshot_url)
+
+    await progress_message.edit(embed=embed)
+
 
 
 @bot.tree.command(name="progress", description="View your academy progress.")
 async def progress(interaction: discord.Interaction):
-    await send_profile_embed(interaction)
+    steps = [
+        "Opening academy progress",
+        "Checking registration status",
+        "Loading training records",
+        "Loading examination records",
+        "Fetching Roblox profile image",
+        "Progress prepared successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Academy Progress", steps)
+
+    if not isinstance(interaction.user, discord.Member):
+        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "This command can only be used inside the server.")
+        return
+
+    await update_progress(progress_message, f"{I17} Academy Progress", steps, 1)
+
+    if not is_trainee(interaction.user):
+        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "You must complete registration before accessing your academy progress.")
+        return
+
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    reg = cursor.fetchone()
+
+    if not reg:
+        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "No approved academy profile was found for you.")
+        return
+
+    (
+        discord_id,
+        discord_username,
+        discord_display_name,
+        roblox_username,
+        roblox_id,
+        department,
+        registered_at,
+        status
+    ) = reg
+
+    await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
+
+    cursor.execute(
+        "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
+        (interaction.user.id,)
+    )
+    trainings = cursor.fetchall()
+
+    await update_progress(progress_message, f"{I17} Academy Progress", steps, 3)
+
+    cursor.execute("""
+    SELECT exam_type, outcome, percentage, grade, grader_name, logged_at
+    FROM exam_logs
+    WHERE trainee_id = ?
+    ORDER BY id ASC
+    """, (interaction.user.id,))
+    exams = cursor.fetchall()
+
+    await update_progress(progress_message, f"{I17} Academy Progress", steps, 4)
+
+    training_text = "\n".join(
+        [f"{DOT} {course} • {date}" for course, date in trainings]
+    ) or f"{DOT} No training attendance recorded."
+
+    exam_text = "\n".join(
+        [
+            f"{DOT} {exam_type} — **{outcome}** • {round(percentage, 2)}% • {date}"
+            for exam_type, outcome, percentage, grade, grader, date in exams
+        ]
+    ) or f"{DOT} No examination participation recorded."
+
+    latest_grade = "None"
+    latest_examiner = "None"
+
+    if exams:
+        latest_grade = exams[-1][3]
+        latest_examiner = exams[-1][4]
+
+    headshot_url = await get_roblox_headshot_url(roblox_id)
+
+    embed = base_embed(
+        f"{I17} {roblox_username} Progress",
+        f"""> {I8} **Training Attendance**
+{training_text}
+
+> {I10} **Examination Participation**
+{exam_text}
+
+> {I10} **Notes**
+{DOT} Warnings: None
+{DOT} Department: {department}
+{DOT} Registered: {registered_at}
+{DOT} Academy Status: {status}
+{DOT} Latest Grade: {latest_grade}
+{DOT} Latest Examiner: {latest_examiner}
+
+{AIR_SERBIA_TAIL} Keep progressing through your academy journey.
+
+[Profile Link]({roblox_profile_url(roblox_id)})
+"""
+    )
+
+    embed.set_author(
+        name=f"{interaction.user.display_name}'s Academy Progress",
+        icon_url=interaction.user.display_avatar.url
+    )
+    embed.set_thumbnail(url=headshot_url)
+
+    await progress_message.edit(embed=embed)
+
 
 
 @bot.tree.command(name="scheduletraining", description="Schedule a new course training.")
@@ -840,18 +1106,35 @@ async def scheduletraining(
     date_timestamp: str,
     time_timestamp: str
 ):
+    steps = [
+        "Starting training schedule",
+        "Checking trainer permissions",
+        "Validating department role",
+        "Saving training schedule",
+        "Posting course schedule",
+        "Sending confirmation and logs",
+        "Training scheduled successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Schedule Training Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Schedule Training Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may schedule trainings.")
+        await fail_progress(progress_message, f"{I17} Schedule Training Progress", steps, 1, "Only Institute Trainers may schedule trainings.")
         return
 
     game_link = ensure_url(game_link)
+
+    await update_progress(progress_message, f"{I17} Schedule Training Progress", steps, 2)
 
     department_role_id = DEPARTMENT_ROLES[department.value]
     department_role = interaction.guild.get_role(department_role_id)
 
     if not department_role:
-        await send_error(interaction, "Role Not Found", "The selected department role could not be found.")
+        await fail_progress(progress_message, f"{I17} Schedule Training Progress", steps, 2, "The selected department role could not be found.")
         return
+
+    await update_progress(progress_message, f"{I17} Schedule Training Progress", steps, 3)
 
     training_id = make_training_id()
     created_at = now_text()
@@ -874,6 +1157,8 @@ async def scheduletraining(
         )
     )
     db.commit()
+
+    await update_progress(progress_message, f"{I17} Schedule Training Progress", steps, 4)
 
     description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Schedule**
 {BLANK}{BLANK} ◜*a new course training has been scheduled*
@@ -902,6 +1187,8 @@ async def scheduletraining(
     await sent.add_reaction(discord.PartialEmoji.from_str(I15))
     await sent.add_reaction(discord.PartialEmoji.from_str(I14))
 
+    await update_progress(progress_message, f"{I17} Schedule Training Progress", steps, 5)
+
     dm_embed = base_embed(
         "Training Successfully Scheduled",
         f"{AIR_SERBIA_LOGO} Your course training has been scheduled successfully.\n\n"
@@ -928,11 +1215,13 @@ async def scheduletraining(
         f"Channel: #{channel.name}"
     )
 
-    await send_success(
-        interaction,
-        "Training Scheduled",
-        f"Training has been posted successfully.\n\n{DOT} **Training ID:** `{training_id}`"
+    await finish_progress(
+        progress_message,
+        f"{I17} Schedule Training Progress",
+        steps,
+        f"Training has been posted successfully. Training ID: `{training_id}`"
     )
+
 
 
 @bot.tree.command(name="jointime", description="Open join time for a scheduled training.")
@@ -940,15 +1229,29 @@ async def jointime(
     interaction: discord.Interaction,
     training_id: str
 ):
+    steps = [
+        "Starting join time request",
+        "Checking trainer permissions",
+        "Finding training record",
+        "Preparing course commencement",
+        "Posting join time",
+        "Join time posted successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Join Time Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Join Time Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may open join time.")
+        await fail_progress(progress_message, f"{I17} Join Time Progress", steps, 1, "Only Institute Trainers may open join time.")
         return
+
+    await update_progress(progress_message, f"{I17} Join Time Progress", steps, 2)
 
     cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
     data = cursor.fetchone()
 
     if not data:
-        await send_error(interaction, "Training Not Found", "No training was found with that Training ID.")
+        await fail_progress(progress_message, f"{I17} Join Time Progress", steps, 2, "No training was found with that Training ID.")
         return
 
     (
@@ -966,11 +1269,13 @@ async def jointime(
         created_at
     ) = data
 
+    await update_progress(progress_message, f"{I17} Join Time Progress", steps, 3)
+
     channel = interaction.guild.get_channel(channel_id)
     department_role = interaction.guild.get_role(department_role_id)
 
     if not channel or not department_role:
-        await send_error(interaction, "Training Error", "The saved channel or department role could not be found.")
+        await fail_progress(progress_message, f"{I17} Join Time Progress", steps, 3, "The saved channel or department role could not be found.")
         return
 
     description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Commencement**
@@ -989,6 +1294,8 @@ async def jointime(
 
     embed = base_embed("Course Commencement", description)
 
+    await update_progress(progress_message, f"{I17} Join Time Progress", steps, 4)
+
     await channel.send(
         content=department_role.mention,
         embed=embed,
@@ -1001,7 +1308,8 @@ async def jointime(
         f"Training ID: `{training_id}`\nCourse: {course}\nDepartment: {department}\nOpened By: {interaction.user}"
     )
 
-    await send_success(interaction, "Join Time Posted", "Course commencement has been posted successfully.")
+    await finish_progress(progress_message, f"{I17} Join Time Progress", steps, "Course commencement has been posted successfully.")
+
 
 
 @bot.tree.command(name="logtraining", description="Log training attendance for a trainee.")
@@ -1011,14 +1319,30 @@ async def logtraining(
     trainee: discord.Member,
     course_name: str
 ):
+    steps = [
+        "Starting attendance log",
+        "Checking trainer permissions",
+        "Finding training record",
+        "Saving attendance record",
+        "Sending log confirmation",
+        "Attendance logged successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Attendance Log Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Attendance Log Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may log training attendance.")
+        await fail_progress(progress_message, f"{I17} Attendance Log Progress", steps, 1, "Only Institute Trainers may log training attendance.")
         return
+
+    await update_progress(progress_message, f"{I17} Attendance Log Progress", steps, 2)
 
     cursor.execute("SELECT training_id FROM trainings WHERE training_id = ?", (training_id,))
     if not cursor.fetchone():
-        await send_error(interaction, "Training Not Found", "No training was found with that Training ID.")
+        await fail_progress(progress_message, f"{I17} Attendance Log Progress", steps, 2, "No training was found with that Training ID.")
         return
+
+    await update_progress(progress_message, f"{I17} Attendance Log Progress", steps, 3)
 
     today = now_text()
 
@@ -1036,13 +1360,16 @@ async def logtraining(
     )
     db.commit()
 
+    await update_progress(progress_message, f"{I17} Attendance Log Progress", steps, 4)
+
     await send_log(
         interaction.guild,
         "Training Attendance Logged",
         f"Trainee: {trainee} (`{trainee.id}`)\nCourse: {course_name}\nTraining ID: `{training_id}`\nTrainer: {interaction.user}"
     )
 
-    await send_success(interaction, "Attendance Logged", "Training attendance has been saved successfully.")
+    await finish_progress(progress_message, f"{I17} Attendance Log Progress", steps, "Training attendance has been saved successfully.")
+
 
 
 @bot.tree.command(name="result", description="Issue examination results to a trainee.")
@@ -1075,18 +1402,36 @@ async def result(
     comments: str,
     exam_link: str
 ):
+    steps = [
+        "Starting examination result",
+        "Checking trainer permissions",
+        "Validating examination score",
+        "Saving examination result",
+        "Preparing result message",
+        "Delivering result to trainee",
+        "Logging result action",
+        "Result issued successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Result Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Result Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may issue results.")
+        await fail_progress(progress_message, f"{I17} Result Progress", steps, 1, "Only Institute Trainers may issue results.")
         return
 
+    await update_progress(progress_message, f"{I17} Result Progress", steps, 2)
+
     if max_points <= 0:
-        await send_error(interaction, "Invalid Score", "Maximum points must be greater than 0.")
+        await fail_progress(progress_message, f"{I17} Result Progress", steps, 2, "Maximum points must be greater than 0.")
         return
 
     exam_link = ensure_url(exam_link)
     percentage = (points / max_points) * 100
     today = now_text()
     grader = str(interaction.user)
+
+    await update_progress(progress_message, f"{I17} Result Progress", steps, 3)
 
     cursor.execute(
         """
@@ -1117,6 +1462,8 @@ async def result(
     )
     db.commit()
 
+    await update_progress(progress_message, f"{I17} Result Progress", steps, 4)
+
     if outcome.value == "PASSED" and exam_type.value == "Theory":
         dm_embed = theory_pass_embed(
             department.value,
@@ -1144,6 +1491,8 @@ async def result(
     else:
         dm_embed = fail_result_embed(comments, exam_link)
 
+    await update_progress(progress_message, f"{I17} Result Progress", steps, 5)
+
     try:
         await trainee.send(embed=dm_embed)
     except Exception:
@@ -1156,6 +1505,8 @@ async def result(
             kicked = True
         except Exception:
             kicked = False
+
+    await update_progress(progress_message, f"{I17} Result Progress", steps, 6)
 
     await send_log(
         interaction.guild,
@@ -1171,11 +1522,13 @@ async def result(
         f"Second Attempt Kick: {'Yes' if kicked else 'No'}"
     )
 
-    await send_success(
-        interaction,
-        "Result Issued",
-        f"The result has been saved and delivered.\n\n{DOT} **Result:** {outcome.value}\n{DOT} **Percentage:** {round(percentage, 2)}%"
+    await finish_progress(
+        progress_message,
+        f"{I17} Result Progress",
+        steps,
+        f"Result saved and delivered. Result: **{outcome.value}** • Percentage: **{round(percentage, 2)}%**"
     )
+
 
 
 @bot.tree.command(name="dm", description="Send an official institute DM to a member.")
@@ -1184,9 +1537,23 @@ async def dm(
     user: discord.Member,
     message: str
 ):
+    steps = [
+        "Starting official DM",
+        "Checking trainer permissions",
+        "Preparing institute message",
+        "Sending direct message",
+        "Logging delivery",
+        "Official DM sent successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Official DM Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Official DM Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may use this command.")
+        await fail_progress(progress_message, f"{I17} Official DM Progress", steps, 1, "Only Institute Trainers may use this command.")
         return
+
+    await update_progress(progress_message, f"{I17} Official DM Progress", steps, 2)
 
     dm_embed = base_embed(
         f"{I17} Official Institute Message",
@@ -1199,11 +1566,15 @@ async def dm(
 """
     )
 
+    await update_progress(progress_message, f"{I17} Official DM Progress", steps, 3)
+
     try:
         await user.send(embed=dm_embed)
     except Exception:
-        await send_error(interaction, "DM Failed", "I could not send a DM to this user.")
+        await fail_progress(progress_message, f"{I17} Official DM Progress", steps, 3, "I could not send a DM to this user.")
         return
+
+    await update_progress(progress_message, f"{I17} Official DM Progress", steps, 4)
 
     await send_log(
         interaction.guild,
@@ -1211,7 +1582,8 @@ async def dm(
         f"Recipient: {user} (`{user.id}`)\nSent By: {interaction.user}"
     )
 
-    await send_success(interaction, "DM Sent", "The official institute message has been delivered.")
+    await finish_progress(progress_message, f"{I17} Official DM Progress", steps, "The official institute message has been delivered.")
+
 
 
 @bot.tree.command(name="canceltraining", description="Cancel a scheduled training.")
@@ -1220,15 +1592,30 @@ async def canceltraining(
     training_id: str,
     reason: str
 ):
+    steps = [
+        "Starting training cancellation",
+        "Checking trainer permissions",
+        "Finding training record",
+        "Preparing cancellation notice",
+        "Posting cancellation notice",
+        "Logging cancellation",
+        "Training cancelled successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Cancellation Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Cancellation Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may cancel trainings.")
+        await fail_progress(progress_message, f"{I17} Cancellation Progress", steps, 1, "Only Institute Trainers may cancel trainings.")
         return
+
+    await update_progress(progress_message, f"{I17} Cancellation Progress", steps, 2)
 
     cursor.execute("SELECT * FROM trainings WHERE training_id = ?", (training_id,))
     data = cursor.fetchone()
 
     if not data:
-        await send_error(interaction, "Training Not Found", "No training was found with that Training ID.")
+        await fail_progress(progress_message, f"{I17} Cancellation Progress", steps, 2, "No training was found with that Training ID.")
         return
 
     (
@@ -1245,6 +1632,8 @@ async def canceltraining(
         scheduled_by_name,
         created_at
     ) = data
+
+    await update_progress(progress_message, f"{I17} Cancellation Progress", steps, 3)
 
     channel = interaction.guild.get_channel(channel_id)
     department_role = interaction.guild.get_role(department_role_id)
@@ -1264,11 +1653,17 @@ Please await further instructions from an **Institute Officer**.
 """
         )
 
+        await update_progress(progress_message, f"{I17} Cancellation Progress", steps, 4)
+
         await channel.send(
             content=department_role.mention,
             embed=embed,
             allowed_mentions=discord.AllowedMentions(roles=True)
         )
+    else:
+        await update_progress(progress_message, f"{I17} Cancellation Progress", steps, 4, "Saved channel or role could not be found, but the cancellation will still be logged.")
+
+    await update_progress(progress_message, f"{I17} Cancellation Progress", steps, 5)
 
     await send_log(
         interaction.guild,
@@ -1276,7 +1671,8 @@ Please await further instructions from an **Institute Officer**.
         f"Training ID: `{training_id}`\nCourse: {course}\nDepartment: {department}\nCancelled By: {interaction.user}\nReason: {reason}"
     )
 
-    await send_success(interaction, "Training Cancelled", "The training cancellation has been posted.")
+    await finish_progress(progress_message, f"{I17} Cancellation Progress", steps, "The training cancellation has been posted.")
+
 
 
 @bot.tree.command(name="deleteregistration", description="Delete a trainee registration record.")
@@ -1285,9 +1681,24 @@ async def deleteregistration(
     user: discord.Member,
     remove_roles: bool = True
 ):
+    steps = [
+        "Starting registration deletion",
+        "Checking trainer permissions",
+        "Deleting academy records",
+        "Checking trainee roles",
+        "Removing trainee roles",
+        "Logging deletion",
+        "Registration deleted successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Delete Registration Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Delete Registration Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may delete registrations.")
+        await fail_progress(progress_message, f"{I17} Delete Registration Progress", steps, 1, "Only Institute Trainers may delete registrations.")
         return
+
+    await update_progress(progress_message, f"{I17} Delete Registration Progress", steps, 2)
 
     cursor.execute("DELETE FROM pending_registrations WHERE discord_id = ?", (user.id,))
     cursor.execute("DELETE FROM registrations WHERE discord_id = ?", (user.id,))
@@ -1296,6 +1707,8 @@ async def deleteregistration(
     db.commit()
 
     removed_roles = []
+
+    await update_progress(progress_message, f"{I17} Delete Registration Progress", steps, 3)
 
     if remove_roles:
         role_ids = [
@@ -1314,6 +1727,8 @@ async def deleteregistration(
                 roles_to_remove.append(role)
                 removed_roles.append(role.name)
 
+        await update_progress(progress_message, f"{I17} Delete Registration Progress", steps, 4)
+
         if roles_to_remove:
             try:
                 await user.remove_roles(
@@ -1321,12 +1736,12 @@ async def deleteregistration(
                     reason="Education Institute registration deleted"
                 )
             except discord.Forbidden:
-                await send_error(
-                    interaction,
-                    "Role Error",
-                    "The registration was deleted, but I could not remove the user's roles. Move my bot role above the trainee roles."
-                )
+                await fail_progress(progress_message, f"{I17} Delete Registration Progress", steps, 4, "The registration was deleted, but I could not remove the user's roles. Move my bot role above the trainee roles.")
                 return
+    else:
+        await update_progress(progress_message, f"{I17} Delete Registration Progress", steps, 4, "Role removal was skipped.")
+
+    await update_progress(progress_message, f"{I17} Delete Registration Progress", steps, 5)
 
     await send_log(
         interaction.guild,
@@ -1336,11 +1751,13 @@ async def deleteregistration(
         f"Roles Removed: {', '.join(removed_roles) if removed_roles else 'None'}"
     )
 
-    await send_success(
-        interaction,
-        "Registration Deleted",
+    await finish_progress(
+        progress_message,
+        f"{I17} Delete Registration Progress",
+        steps,
         f"{user.mention}'s registration, training logs, and examination logs have been deleted."
     )
+
 
 
 @bot.tree.command(name="startexamroom", description="Randomly assign a trainee to an examination room.")
@@ -1348,9 +1765,25 @@ async def startexamroom(
     interaction: discord.Interaction,
     trainee: discord.Member
 ):
+    steps = [
+        "Starting examination room assignment",
+        "Checking trainer permissions",
+        "Finding available exam rooms",
+        "Matching exam text channel",
+        "Connecting bot to voice room",
+        "Moving trainee to assigned room",
+        "Posting examination notice",
+        "Examination room started successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Exam Room Progress", steps)
+
+    await update_progress(progress_message, f"{I17} Exam Room Progress", steps, 1)
+
     if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
-        await send_error(interaction, "Permission Denied", "Only Institute Trainers may start an exam room.")
+        await fail_progress(progress_message, f"{I17} Exam Room Progress", steps, 1, "Only Institute Trainers may start an exam room.")
         return
+
+    await update_progress(progress_message, f"{I17} Exam Room Progress", steps, 2)
 
     exam_rooms = []
 
@@ -1361,11 +1794,7 @@ async def startexamroom(
             exam_rooms.append((channel, room_number))
 
     if not exam_rooms:
-        await send_error(
-            interaction,
-            "No Exam Rooms Found",
-            "I could not find any voice channels named `room-1`, `room-2`, `room-3`, etc."
-        )
+        await fail_progress(progress_message, f"{I17} Exam Room Progress", steps, 2, "I could not find any voice channels named `room-1`, `room-2`, `room-3`, etc.")
         return
 
     empty_rooms = [(channel, number) for channel, number in exam_rooms if len(channel.members) == 0]
@@ -1375,42 +1804,43 @@ async def startexamroom(
     else:
         selected_room, room_number = random.choice(exam_rooms)
 
+    await update_progress(progress_message, f"{I17} Exam Room Progress", steps, 3)
+
     exam_text_channel = discord.utils.get(
         interaction.guild.text_channels,
         name=f"exam-{room_number}"
     )
 
     if not exam_text_channel:
-        await send_error(
-            interaction,
-            "Exam Channel Not Found",
-            f"I found `{selected_room.name}`, but I could not find the matching text channel `exam-{room_number}`."
-        )
+        await fail_progress(progress_message, f"{I17} Exam Room Progress", steps, 3, f"I found `{selected_room.name}`, but I could not find the matching text channel `exam-{room_number}`.")
         return
+
+    await update_progress(progress_message, f"{I17} Exam Room Progress", steps, 4)
 
     try:
         voice_client = interaction.guild.voice_client
 
         if voice_client and voice_client.is_connected():
-            await voice_client.move_to(selected_room)
-        else:
-            await selected_room.connect(self_deaf=True)
+            await fail_progress(
+                progress_message,
+                f"{I17} Exam Room Progress",
+                steps,
+                4,
+                f"I am already connected to {voice_client.channel.mention}. Please ask the trainer to disconnect me before starting another examination room."
+            )
+            return
+
+        await selected_room.connect(self_deaf=True)
 
     except discord.Forbidden:
-        await send_error(
-            interaction,
-            "Missing Permission",
-            f"I do not have permission to connect to {selected_room.mention}."
-        )
+        await fail_progress(progress_message, f"{I17} Exam Room Progress", steps, 4, f"I do not have permission to connect to {selected_room.mention}.")
         return
 
     except Exception as e:
-        await send_error(
-            interaction,
-            "Voice Connection Failed",
-            f"I could not join the selected exam room.\n\nError: `{e}`"
-        )
+        await fail_progress(progress_message, f"{I17} Exam Room Progress", steps, 4, f"I could not join the selected exam room. Error: `{e}`")
         return
+
+    await update_progress(progress_message, f"{I17} Exam Room Progress", steps, 5)
 
     try:
         await trainee.move_to(selected_room, reason="Trainee assigned to examination room")
@@ -1422,6 +1852,8 @@ async def startexamroom(
         await ghost_ping.delete(delay=1)
     except Exception:
         pass
+
+    await update_progress(progress_message, f"{I17} Exam Room Progress", steps, 6)
 
     embed = base_embed(
         f"{I17} Examination Centre",
@@ -1460,15 +1892,26 @@ async def startexamroom(
         f"Trainer: {interaction.user}"
     )
 
-    await send_success(
-        interaction,
-        "Exam Room Started",
+    await finish_progress(
+        progress_message,
+        f"{I17} Exam Room Progress",
+        steps,
         f"{trainee.mention} has been assigned to {selected_room.mention}. The examination notice was posted in {exam_text_channel.mention}."
     )
 
 
+
 @bot.tree.command(name="help", description="View Institute Core commands.")
 async def help_command(interaction: discord.Interaction):
+    steps = [
+        "Opening command directory",
+        "Loading institute commands",
+        "Preparing help panel"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Help Progress", steps)
+    await update_progress(progress_message, f"{I17} Help Progress", steps, 1)
+    await update_progress(progress_message, f"{I17} Help Progress", steps, 2)
+
     description = f"""{AIR_SERBIA_LOGO} **Institute Core Command Directory**
 
 > {DOT} `/register` — Submit your registration for review.
@@ -1481,11 +1924,13 @@ async def help_command(interaction: discord.Interaction):
 > {DOT} `/dm` — Send an official institute DM.
 > {DOT} `/canceltraining` — Cancel a scheduled training.
 > {DOT} `/deleteregistration` — Delete a trainee registration record.
+> {DOT} `/startexamroom` — Randomly assign a trainee to an examination room.
 
 {I17} **Air Serbia Education Institute** ⦧ *Reaching new heights, revolutionising the industry*
 """
     embed = base_embed("Institute Core Help", description)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await progress_message.edit(embed=embed)
+
 
 
 bot.run(TOKEN)
