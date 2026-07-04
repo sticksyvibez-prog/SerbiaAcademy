@@ -1,12 +1,18 @@
 import os
+import asyncio
 import re
+import random
+import string
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 
+import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 from dotenv import load_dotenv
+
+print("ACADEMY BUILD VERSION: 4 JULY 2026 - STAFF REGISTER UPDATE")
 
 load_dotenv()
 
@@ -801,7 +807,7 @@ async def on_ready():
         await bot.tree.sync()
     if not flight_scheduler.is_running():
         flight_scheduler.start()
-    print(f"Logged in as {bot.user} | Air Serbia Personnel Core online")
+  print(f"Logged in as {bot.user} | Air Serbia Education Institute online")
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env file.")
