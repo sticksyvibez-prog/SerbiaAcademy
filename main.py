@@ -1400,8 +1400,12 @@ async def profile(interaction: discord.Interaction):
 
 
 
-@bot.tree.command(name="progress", description="View your academy progress.")
-async def progress(interaction: discord.Interaction):
+@bot.tree.command(name="progress", description="View your or another user's academy progress.")
+async def progress(
+    interaction: discord.Interaction,
+    user: discord.Member | None = None
+):
+    target = user or interaction.user
     steps = [
         "Opening academy progress",
         "Checking registration status",
@@ -1412,21 +1416,11 @@ async def progress(interaction: discord.Interaction):
     ]
     progress_message = await start_progress(interaction, f"{I17} Academy Progress", steps)
 
-    if not isinstance(interaction.user, discord.Member):
-        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "This command can only be used inside the server.")
-        return
-
-    await update_progress(progress_message, f"{I17} Academy Progress", steps, 1)
-
-    if not is_trainee(interaction.user):
-        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "You must complete registration before accessing your academy progress.")
-        return
-
-    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (target.id,))
     reg = cursor.fetchone()
 
     if not reg:
-        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "No approved academy profile was found for you.")
+        await fail_progress(progress_message, f"{I17} Academy Progress", steps, 1, "No approved academy profile was found for that user.")
         return
 
     (
@@ -1442,9 +1436,10 @@ async def progress(interaction: discord.Interaction):
 
     await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
 
-    cursor.execute(
-        "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
-        (interaction.user.id,)
+ cursor.execute(
+    "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
+    (target.id,)
+)
     )
     trainings = cursor.fetchall()
 
@@ -1455,7 +1450,7 @@ async def progress(interaction: discord.Interaction):
     FROM exam_logs
     WHERE trainee_id = ?
     ORDER BY id ASC
-    """, (interaction.user.id,))
+    """, (target.id,))
     exams = cursor.fetchall()
 
     await update_progress(progress_message, f"{I17} Academy Progress", steps, 4)
@@ -1503,8 +1498,8 @@ async def progress(interaction: discord.Interaction):
     )
 
     embed.set_author(
-        name=f"{interaction.user.display_name}'s Academy Progress",
-        icon_url=interaction.user.display_avatar.url
+        name=f"{target.display_name}'s Academy Progress",
+        icon_url=target.display_avatar.url
     )
     embed.set_thumbnail(url=headshot_url)
 
