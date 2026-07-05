@@ -1434,12 +1434,11 @@ async def progress(
         status
     ) = reg
 
-    await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
+       await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
 
- cursor.execute(
-    "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
-    (target.id,)
-)
+    cursor.execute(
+        "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
+        (target.id,)
     )
     trainings = cursor.fetchall()
 
