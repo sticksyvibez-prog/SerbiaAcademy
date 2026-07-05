@@ -1434,7 +1434,7 @@ async def progress(
         status
     ) = reg
 
-       await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
+    await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
 
     cursor.execute(
         "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
@@ -1558,26 +1558,24 @@ async def scheduletraining(
 
     cursor.execute(
         "INSERT INTO trainings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-       (
-        discord_id,
-        discord_username,
-        discord_display_name,
-        roblox_username,
-        roblox_id,
-        department,
-        registered_at,
-        status
-    ) = reg
-
-    await update_progress(progress_message, f"{I17} Academy Progress", steps, 2)
-
-    cursor.execute(
-        "SELECT course_name, logged_at FROM training_logs WHERE trainee_id = ? ORDER BY id ASC",
-        (target.id,)
+        (
+            training_id,
+            channel.id,
+            department.value,
+            department_role.id,
+            course,
+            phase,
+            game_link,
+            date_timestamp,
+            time_timestamp,
+            interaction.user.id,
+            str(interaction.user),
+            created_at
+        )
     )
-    trainings = cursor.fetchall()
+    db.commit()
 
-    await update_progress(progress_message, f"{I17} Academy Progress", steps, 3)
+    await update_progress(progress_message, f"{I17} Schedule Training Progress", steps, 4)
 
     description = f"""> {I17} **𝗔𝗶𝗿 𝗦𝗲𝗿𝗯𝗶𝗮 𝗘𝗱𝘂𝗰𝗮𝘁𝗶𝗼𝗻 𝗜𝗻𝘀𝘁𝗶𝘁𝘂𝘁𝗲** — **Course Schedule**
 {BLANK}{BLANK} ◜*a new course training has been scheduled*
