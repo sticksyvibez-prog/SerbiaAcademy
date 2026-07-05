@@ -862,14 +862,30 @@ async def on_ready():
         bot.add_view(StaffRegistrationView())
         bot.persistent_views_added = True
 
-    guild = discord.Object(id=GUILD_ID)
+    # Sync commands only once per process. This prevents reconnects from
+    # accidentally replacing the guild command list.
+    if not getattr(bot, "commands_synced", False):
+        guild = discord.Object(id=GUILD_ID)
 
-    try:
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(synced)} command(s) to Air Serbia server.")
-    except Exception as e:
-        print(f"Command sync failed: {e}")
+        try:
+            # Copy the commands defined in this file to the Air Serbia guild.
+            bot.tree.copy_global_to(guild=guild)
+
+            # Remove old GLOBAL slash commands. An outdated global /register
+            # can otherwise remain visible and cause CommandSignatureMismatch.
+            bot.tree.clear_commands(guild=None)
+            await bot.tree.sync()
+
+            # Publish the current guild command signatures immediately.
+            synced = await bot.tree.sync(guild=guild)
+            bot.commands_synced = True
+
+            print(f"Synced {len(synced)} guild command(s) to Air Serbia server:")
+            for command in synced:
+                print(f"/{command.name}")
+
+        except Exception as e:
+            print(f"Command sync failed: {type(e).__name__}: {e}")
 
     print(f"Logged in as {bot.user}")
 
