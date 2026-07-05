@@ -35,6 +35,7 @@ GUILD_ID = 1512023301420224673
 
 TRAINER_ROLE_ID = 1512023301457973280
 TRAINEE_ROLE_ID = 1512023301445259316
+STAFF_REGISTER_ROLE_ID = 1512023301470421114
 
 CABIN_CREW_ROLE_ID = 1512023301432541295
 GROUND_CREW_ROLE_ID = 1512023301432541294
@@ -126,6 +127,33 @@ CREATE TABLE IF NOT EXISTS registrations (
 """)
 
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS pending_staff_registrations (
+    discord_id INTEGER PRIMARY KEY,
+    discord_username TEXT,
+    discord_display_name TEXT,
+    roblox_username TEXT,
+    roblox_id TEXT,
+    staff_role TEXT,
+    submitted_by_id INTEGER,
+    submitted_by_name TEXT,
+    submitted_at TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS staff_registrations (
+    discord_id INTEGER PRIMARY KEY,
+    discord_username TEXT,
+    discord_display_name TEXT,
+    roblox_username TEXT,
+    roblox_id TEXT,
+    staff_role TEXT,
+    registered_at TEXT,
+    status TEXT
+)
+""")
+
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS trainings (
     training_id TEXT PRIMARY KEY,
     channel_id INTEGER,
@@ -195,6 +223,10 @@ def is_trainee(member: discord.Member) -> bool:
     return any(role.id == TRAINEE_ROLE_ID for role in member.roles)
 
 
+def can_register_staff(member: discord.Member) -> bool:
+    return any(role.id == STAFF_REGISTER_ROLE_ID for role in member.roles)
+
+
 def has_institute_role(member: discord.Member) -> bool:
     return any(role.id in INSTITUTE_ROLE_IDS for role in member.roles)
 
@@ -239,6 +271,19 @@ async def get_roblox_headshot_url(roblox_id: str) -> str:
 
     except Exception:
         return fallback
+
+
+async def get_roblox_username(roblox_id: str) -> str | None:
+    try:
+        api_url = f"https://users.roblox.com/v1/users/{roblox_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=8) as response:
+                if response.status != 200:
+                    return None
+                data = await response.json()
+                return data.get("name")
+    except Exception:
+        return None
 
 
 def base_embed(title: str, description: str = "") -> discord.Embed:
@@ -636,6 +681,177 @@ class RegistrationView(discord.ui.View):
 
 
 # ============================================================
+# STAFF REGISTRATION APPROVAL VIEW
+# ============================================================
+
+class StaffRegistrationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Approve Staff",
+        style=discord.ButtonStyle.success,
+        custom_id="asei_staff_registration_approve"
+    )
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+            await send_error(interaction, "Permission Denied", "Only Institute Trainers may approve staff registrations.")
+            return
+
+        embed = interaction.message.embeds[0]
+        discord_id = None
+        for field in embed.fields:
+            if field.name == "Discord ID":
+                discord_id = int(field.value)
+                break
+
+        if not discord_id:
+            await send_error(interaction, "Registration Error", "Discord ID could not be found in this registration request.")
+            return
+
+        cursor.execute("SELECT * FROM pending_staff_registrations WHERE discord_id = ?", (discord_id,))
+        data = cursor.fetchone()
+        if not data:
+            await send_error(interaction, "Registration Error", "This staff registration is no longer pending.")
+            return
+
+        (
+            discord_id, discord_username, discord_display_name, roblox_username,
+            roblox_id, staff_role, submitted_by_id, submitted_by_name, submitted_at
+        ) = data
+
+        member = interaction.guild.get_member(discord_id)
+        if not member:
+            await send_error(interaction, "Member Not Found", "The staff member is no longer in this server.")
+            return
+
+        matching_role = discord.utils.find(
+            lambda role: role.name.casefold() == staff_role.casefold(),
+            interaction.guild.roles
+        )
+
+        if not matching_role:
+            await send_error(
+                interaction,
+                "Role Not Found",
+                f"No Discord role named `{staff_role}` was found. Create it or ensure the entered role name is exact."
+            )
+            return
+
+        try:
+            await member.add_roles(
+                matching_role,
+                reason="Air Serbia Education Institute staff registration approved"
+            )
+        except discord.Forbidden:
+            await send_error(
+                interaction,
+                "Role Error",
+                "I could not assign the staff role. Place the bot role above the selected staff role."
+            )
+            return
+
+        registered_at = now_text()
+        cursor.execute(
+            """
+            INSERT INTO staff_registrations (
+                discord_id, discord_username, discord_display_name, roblox_username,
+                roblox_id, staff_role, registered_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                discord_username = excluded.discord_username,
+                discord_display_name = excluded.discord_display_name,
+                roblox_username = excluded.roblox_username,
+                roblox_id = excluded.roblox_id,
+                staff_role = excluded.staff_role,
+                registered_at = excluded.registered_at,
+                status = excluded.status
+            """,
+            (
+                discord_id, discord_username, discord_display_name, roblox_username,
+                roblox_id, staff_role, registered_at, "Active"
+            )
+        )
+        cursor.execute("DELETE FROM pending_staff_registrations WHERE discord_id = ?", (discord_id,))
+        db.commit()
+
+        try:
+            dm_embed = base_embed(
+                "Staff Registration Approved",
+                f"Your staff registration has been approved.\n\n"
+                f"{DOT} **Staff Role:** {staff_role}\n"
+                f"{DOT} **Roblox Username:** {roblox_username}\n"
+                f"{DOT} **Status:** Active"
+            )
+            await member.send(embed=dm_embed)
+        except Exception:
+            pass
+
+        embed.color = discord.Color.green()
+        embed.add_field(name="Status", value=f"Approved by {interaction.user}", inline=False)
+        disabled_view = StaffRegistrationView()
+        for item in disabled_view.children:
+            item.disabled = True
+        await interaction.message.edit(embed=embed, view=disabled_view)
+
+        await send_log(
+            interaction.guild,
+            "Staff Registration Approved",
+            f"Staff Member: {member} (`{member.id}`)\n"
+            f"Staff Role: {staff_role}\nApproved By: {interaction.user}"
+        )
+        await send_success(interaction, "Staff Registration Approved", "The staff member has been registered and ranked.")
+
+    @discord.ui.button(
+        label="Reject Staff",
+        style=discord.ButtonStyle.danger,
+        custom_id="asei_staff_registration_reject"
+    )
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not is_trainer(interaction.user):
+            await send_error(interaction, "Permission Denied", "Only Institute Trainers may reject staff registrations.")
+            return
+
+        embed = interaction.message.embeds[0]
+        discord_id = None
+        for field in embed.fields:
+            if field.name == "Discord ID":
+                discord_id = int(field.value)
+                break
+
+        if not discord_id:
+            await send_error(interaction, "Registration Error", "Discord ID could not be found in this registration request.")
+            return
+
+        cursor.execute("DELETE FROM pending_staff_registrations WHERE discord_id = ?", (discord_id,))
+        db.commit()
+
+        member = interaction.guild.get_member(discord_id)
+        if member:
+            try:
+                await member.send(embed=base_embed(
+                    "Staff Registration Rejected",
+                    "Your staff registration request was not approved at this time."
+                ))
+            except Exception:
+                pass
+
+        embed.color = discord.Color.red()
+        embed.add_field(name="Status", value=f"Rejected by {interaction.user}", inline=False)
+        disabled_view = StaffRegistrationView()
+        for item in disabled_view.children:
+            item.disabled = True
+        await interaction.message.edit(embed=embed, view=disabled_view)
+
+        await send_log(
+            interaction.guild,
+            "Staff Registration Rejected",
+            f"Staff Member ID: `{discord_id}`\nRejected By: {interaction.user}"
+        )
+        await send_success(interaction, "Staff Registration Rejected", "The staff registration has been rejected.")
+
+
+# ============================================================
 # BOT EVENTS
 # ============================================================
 
@@ -643,6 +859,7 @@ class RegistrationView(discord.ui.View):
 async def on_ready():
     if not bot.persistent_views_added:
         bot.add_view(RegistrationView())
+        bot.add_view(StaffRegistrationView())
         bot.persistent_views_added = True
 
     guild = discord.Object(id=GUILD_ID)
@@ -766,7 +983,7 @@ async def send_profile_embed(interaction: discord.Interaction):
 # ============================================================
 
 
-@bot.tree.command(name="register", description="Submit your Education Institute registration.")
+@bot.tree.command(name="register", description="Submit an Education Institute trainee registration.")
 @app_commands.choices(department=[
     app_commands.Choice(name="Cabin Crew Trainee", value="Cabin Crew Trainee"),
     app_commands.Choice(name="Ground Crew Trainee", value="Ground Crew Trainee"),
@@ -777,76 +994,106 @@ async def register(
     interaction: discord.Interaction,
     roblox_username: str,
     roblox_id: str,
-    department: app_commands.Choice[str]
+    department: app_commands.Choice[str],
+    discord_user_id: str | None = None
 ):
     steps = [
         "Starting registration request",
         "Checking academy eligibility",
-        "Verifying Roblox User ID",
+        "Verifying Discord and Roblox User IDs",
         "Saving registration request",
         "Sending request to trainers",
         "Registration submitted successfully"
     ]
     progress_message = await start_progress(interaction, f"{I17} Registration Progress", steps)
-
     await update_progress(progress_message, f"{I17} Registration Progress", steps, 1)
 
     if not isinstance(interaction.user, discord.Member):
         await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "This command can only be used inside the server.")
         return
 
-    if has_institute_role(interaction.user):
+    target = interaction.user
+    submitted_for_other = False
+
+    if discord_user_id:
+        if not re.fullmatch(r"\d{15,22}", discord_user_id):
+            await fail_progress(progress_message, f"{I17} Registration Progress", steps, 2, "Please enter a valid numeric Discord User ID.")
+            return
+
+        requested_id = int(discord_user_id)
+        if requested_id != interaction.user.id:
+            if not can_register_staff(interaction.user):
+                await fail_progress(
+                    progress_message,
+                    f"{I17} Registration Progress",
+                    steps,
+                    1,
+                    "Only authorized staff may register another trainee. Leave Discord User ID empty to register yourself."
+                )
+                return
+            target = interaction.guild.get_member(requested_id)
+            submitted_for_other = True
+            if not target:
+                await fail_progress(progress_message, f"{I17} Registration Progress", steps, 2, "That Discord user could not be found in this server.")
+                return
+
+    if not submitted_for_other and has_institute_role(target):
         await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "You are already registered or already hold an Institute role.")
         return
 
-    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
+    cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (target.id,))
     if cursor.fetchone():
-        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "You already have an approved Education Institute profile.")
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "This trainee already has an approved Education Institute profile.")
         return
 
-    cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (interaction.user.id,))
+    cursor.execute("SELECT * FROM pending_registrations WHERE discord_id = ?", (target.id,))
     if cursor.fetchone():
-        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "Your registration is already pending review by an Institute Officer.")
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "This trainee already has a registration pending review.")
         return
 
     await update_progress(progress_message, f"{I17} Registration Progress", steps, 2)
-
     if not re.fullmatch(r"\d{2,20}", roblox_id):
-        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 2, "Please enter your numeric Roblox User ID, not your Roblox username.")
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 2, "Please enter the numeric Roblox User ID.")
         return
 
     await update_progress(progress_message, f"{I17} Registration Progress", steps, 3)
-
     submitted_at = now_text()
 
     cursor.execute(
-        "REPLACE INTO pending_registrations VALUES (?, ?, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO pending_registrations (
+            discord_id, discord_username, discord_display_name, roblox_username,
+            roblox_id, department, submitted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(discord_id) DO UPDATE SET
+            discord_username = excluded.discord_username,
+            discord_display_name = excluded.discord_display_name,
+            roblox_username = excluded.roblox_username,
+            roblox_id = excluded.roblox_id,
+            department = excluded.department,
+            submitted_at = excluded.submitted_at
+        """,
         (
-            interaction.user.id,
-            str(interaction.user),
-            interaction.user.display_name,
-            roblox_username,
-            roblox_id,
-            department.value,
-            submitted_at
+            target.id, str(target), target.display_name, roblox_username,
+            roblox_id, department.value, submitted_at
         )
     )
     db.commit()
 
     await update_progress(progress_message, f"{I17} Registration Progress", steps, 4)
-
     review_channel = interaction.guild.get_channel(REGISTRATION_REVIEW_CHANNEL_ID)
     headshot_url = await get_roblox_headshot_url(roblox_id)
 
     embed = base_embed(
         f"{AIR_SERBIA_LOGO} Registration Review",
-        "A new Education Institute registration has been submitted and is awaiting review."
+        "A new Education Institute trainee registration has been submitted and is awaiting review."
     )
-    embed.add_field(name="Applicant", value=f"{interaction.user} (`{interaction.user.id}`)", inline=False)
-    embed.add_field(name="Discord ID", value=str(interaction.user.id), inline=True)
+    embed.add_field(name="Applicant", value=f"{target} (`{target.id}`)", inline=False)
+    embed.add_field(name="Discord ID", value=str(target.id), inline=True)
     embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
     embed.add_field(name="Roblox User ID", value=roblox_id, inline=True)
     embed.add_field(name="Department", value=department.value, inline=False)
+    embed.add_field(name="Submitted By", value=f"{interaction.user} (`{interaction.user.id}`)", inline=False)
     embed.add_field(name="Submitted", value=submitted_at, inline=True)
     embed.add_field(name="Roblox Profile", value=f"[Profile Link]({roblox_profile_url(roblox_id)})", inline=False)
     embed.set_thumbnail(url=headshot_url)
@@ -854,16 +1101,138 @@ async def register(
     if review_channel:
         await review_channel.send(embed=embed, view=RegistrationView())
     else:
-        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 4, "The registration review channel could not be found. Please contact an Institute Officer.")
+        await fail_progress(progress_message, f"{I17} Registration Progress", steps, 4, "The registration review channel could not be found.")
         return
 
     await finish_progress(
         progress_message,
         f"{I17} Registration Progress",
         steps,
-        "Your registration has been submitted for review. Please wait for an Institute Officer to approve it."
+        f"{target.mention}'s registration has been submitted for review."
     )
 
+
+@bot.tree.command(name="staffregister", description="Register an Air Serbia staff member for approval.")
+async def staffregister(
+    interaction: discord.Interaction,
+    discord_user_id: str,
+    roblox_id: str,
+    staff_role: str
+):
+    steps = [
+        "Starting staff registration",
+        "Checking authorization",
+        "Verifying Discord and Roblox User IDs",
+        "Loading Roblox account",
+        "Saving staff registration",
+        "Sending request for approval",
+        "Staff registration submitted successfully"
+    ]
+    progress_message = await start_progress(interaction, f"{I17} Staff Registration Progress", steps)
+    await update_progress(progress_message, f"{I17} Staff Registration Progress", steps, 1)
+
+    if not isinstance(interaction.user, discord.Member) or not can_register_staff(interaction.user):
+        await fail_progress(
+            progress_message,
+            f"{I17} Staff Registration Progress",
+            steps,
+            1,
+            "You must hold the authorized staff-registration role to use this command."
+        )
+        return
+
+    await update_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2)
+    if not re.fullmatch(r"\d{15,22}", discord_user_id):
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2, "Please enter a valid numeric Discord User ID.")
+        return
+    if not re.fullmatch(r"\d{2,20}", roblox_id):
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2, "Please enter a valid numeric Roblox User ID.")
+        return
+    if not staff_role.strip():
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2, "Please enter the staff member's role name.")
+        return
+
+    target = interaction.guild.get_member(int(discord_user_id))
+    if not target:
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2, "That Discord user could not be found in this server.")
+        return
+
+    cursor.execute("SELECT 1 FROM staff_registrations WHERE discord_id = ?", (target.id,))
+    if cursor.fetchone():
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2, "This member already has an approved staff profile.")
+        return
+    cursor.execute("SELECT 1 FROM pending_staff_registrations WHERE discord_id = ?", (target.id,))
+    if cursor.fetchone():
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 2, "This member already has a pending staff registration.")
+        return
+
+    await update_progress(progress_message, f"{I17} Staff Registration Progress", steps, 3)
+    roblox_username = await get_roblox_username(roblox_id)
+    if not roblox_username:
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 3, "The Roblox account could not be found from that User ID.")
+        return
+
+    await update_progress(progress_message, f"{I17} Staff Registration Progress", steps, 4)
+    submitted_at = now_text()
+    cursor.execute(
+        """
+        INSERT INTO pending_staff_registrations (
+            discord_id, discord_username, discord_display_name, roblox_username,
+            roblox_id, staff_role, submitted_by_id, submitted_by_name, submitted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(discord_id) DO UPDATE SET
+            discord_username = excluded.discord_username,
+            discord_display_name = excluded.discord_display_name,
+            roblox_username = excluded.roblox_username,
+            roblox_id = excluded.roblox_id,
+            staff_role = excluded.staff_role,
+            submitted_by_id = excluded.submitted_by_id,
+            submitted_by_name = excluded.submitted_by_name,
+            submitted_at = excluded.submitted_at
+        """,
+        (
+            target.id, str(target), target.display_name, roblox_username, roblox_id,
+            staff_role.strip(), interaction.user.id, str(interaction.user), submitted_at
+        )
+    )
+    db.commit()
+
+    await update_progress(progress_message, f"{I17} Staff Registration Progress", steps, 5)
+    review_channel = interaction.guild.get_channel(REGISTRATION_REVIEW_CHANNEL_ID)
+    headshot_url = await get_roblox_headshot_url(roblox_id)
+
+    embed = base_embed(
+        f"{AIR_SERBIA_LOGO} Staff Registration Review",
+        "A new staff registration has been submitted and is awaiting approval."
+    )
+    embed.add_field(name="Staff Member", value=f"{target} (`{target.id}`)", inline=False)
+    embed.add_field(name="Discord ID", value=str(target.id), inline=True)
+    embed.add_field(name="Roblox Username", value=roblox_username, inline=True)
+    embed.add_field(name="Roblox User ID", value=roblox_id, inline=True)
+    embed.add_field(name="Staff Role", value=staff_role.strip(), inline=False)
+    embed.add_field(name="Submitted By", value=f"{interaction.user} (`{interaction.user.id}`)", inline=False)
+    embed.add_field(name="Submitted", value=submitted_at, inline=True)
+    embed.add_field(name="Roblox Profile", value=f"[Profile Link]({roblox_profile_url(roblox_id)})", inline=False)
+    embed.set_thumbnail(url=headshot_url)
+
+    if not review_channel:
+        await fail_progress(progress_message, f"{I17} Staff Registration Progress", steps, 5, "The registration review channel could not be found.")
+        return
+
+    await review_channel.send(embed=embed, view=StaffRegistrationView())
+    await send_log(
+        interaction.guild,
+        "Staff Registration Submitted",
+        f"Staff Member: {target} (`{target.id}`)\n"
+        f"Roblox: {roblox_username} (`{roblox_id}`)\n"
+        f"Role: {staff_role.strip()}\nSubmitted By: {interaction.user}"
+    )
+    await finish_progress(
+        progress_message,
+        f"{I17} Staff Registration Progress",
+        steps,
+        f"{target.mention}'s staff registration has been submitted for approval."
+    )
 
 
 @bot.tree.command(name="profile", description="View your Air Serbia Education Institute profile.")
@@ -883,6 +1252,43 @@ async def profile(interaction: discord.Interaction):
         return
 
     await update_progress(progress_message, f"{I17} Profile Progress", steps, 1)
+
+    cursor.execute("SELECT * FROM staff_registrations WHERE discord_id = ?", (interaction.user.id,))
+    staff_reg = cursor.fetchone()
+
+    if staff_reg:
+        (
+            discord_id, discord_username, discord_display_name, roblox_username,
+            roblox_id, staff_role, registered_at, status
+        ) = staff_reg
+
+        await update_progress(progress_message, f"{I17} Profile Progress", steps, 2)
+        await update_progress(progress_message, f"{I17} Profile Progress", steps, 3)
+        await update_progress(progress_message, f"{I17} Profile Progress", steps, 4)
+
+        headshot_url = await get_roblox_headshot_url(roblox_id)
+        embed = base_embed(
+            f"{I17} {roblox_username} Staff Profile",
+            f"""> {I10} **Staff Information**
+{DOT} Discord User: {interaction.user.mention}
+{DOT} Roblox Username: {roblox_username}
+{DOT} Roblox User ID: {roblox_id}
+{DOT} Staff Role: {staff_role}
+{DOT} Registered: {registered_at}
+{DOT} Status: {status}
+
+{AIR_SERBIA_TAIL} Thank you for your service to Air Serbia.
+
+[Roblox Profile]({roblox_profile_url(roblox_id)})
+"""
+        )
+        embed.set_author(
+            name=f"{interaction.user.display_name}'s Staff Profile",
+            icon_url=interaction.user.display_avatar.url
+        )
+        embed.set_thumbnail(url=headshot_url)
+        await progress_message.edit(embed=embed)
+        return
 
     if not is_trainee(interaction.user):
         await fail_progress(progress_message, f"{I17} Profile Progress", steps, 1, "You must complete registration before accessing your academy profile.")
@@ -1915,7 +2321,8 @@ async def help_command(interaction: discord.Interaction):
 
     description = f"""{AIR_SERBIA_LOGO} **Institute Core Command Directory**
 
-> {DOT} `/register` — Submit your registration for review.
+> {DOT} `/register` — Submit a trainee registration for review.
+> {DOT} `/staffregister` — Submit a staff registration for approval.
 > {DOT} `/profile` — View your academy profile.
 > {DOT} `/progress` — View your academy progress.
 > {DOT} `/scheduletraining` — Schedule a course training.
