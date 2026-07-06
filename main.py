@@ -562,13 +562,18 @@ class RegistrationView(discord.ui.View):
         if not member:
             await send_error(interaction, "Member Not Found", "The applicant is no longer in this server.")
             return
-
         trainee_role = interaction.guild.get_role(TRAINEE_ROLE_ID)
+        authorised_role = interaction.guild.get_role(AUTHORIZED_ROLE_ID)
         department_role = interaction.guild.get_role(DEPARTMENT_ROLES.get(department))
 
         roles_to_add = []
+
         if trainee_role:
             roles_to_add.append(trainee_role)
+
+        if authorised_role:
+            roles_to_add.append(authorised_role)
+
         if department_role:
             roles_to_add.append(department_role)
 
