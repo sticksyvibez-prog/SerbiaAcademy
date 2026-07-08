@@ -100,7 +100,13 @@ bot.persistent_views_added = False
 # DATABASE
 # ============================================================
 
-db = sqlite3.connect("institute_core_v2.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "institute_core_v2.db")
+
+database_parent = os.path.dirname(DATABASE_PATH)
+if database_parent:
+    os.makedirs(database_parent, exist_ok=True)
+
+db = sqlite3.connect(DATABASE_PATH)
 cursor = db.cursor()
 
 cursor.execute("""
@@ -861,6 +867,16 @@ async def register(
         await fail_progress(progress_message, f"{I17} Registration Progress", steps, 1, "This command can only be used inside the server.")
         return
 
+    if not can_register_staff(interaction.user):
+        await fail_progress(
+            progress_message,
+            f"{I17} Registration Progress",
+            steps,
+            1,
+            f"You must hold <@&{STAFF_REGISTER_ROLE_ID}> to use the `/register` command."
+        )
+        return
+
     target = interaction.user
     submitted_for_other = False
 
@@ -974,10 +990,6 @@ async def profile(interaction: discord.Interaction):
         return
 
     await update_progress(progress_message, f"{I17} Profile Progress", steps, 1)
-
-    if not is_trainee(interaction.user):
-        await fail_progress(progress_message, f"{I17} Profile Progress", steps, 1, "You must complete registration before accessing your academy profile.")
-        return
 
     cursor.execute("SELECT * FROM registrations WHERE discord_id = ?", (interaction.user.id,))
     reg = cursor.fetchone()
@@ -2104,74 +2116,6 @@ async def help_command(interaction: discord.Interaction):
     await progress_message.edit(embed=embed)
 
 
-
-# ============================================================
-# GLOBAL COMMAND PERMISSIONS
-# ============================================================
-
-async def register_role_check(interaction: discord.Interaction) -> bool:
-    if not isinstance(interaction.user, discord.Member):
-        return False
-    return any(role.id == STAFF_REGISTER_ROLE_ID for role in interaction.user.roles)
-
-
-async def trainer_role_check(interaction: discord.Interaction) -> bool:
-    if not isinstance(interaction.user, discord.Member):
-        return False
-    return any(role.id == TRAINER_ROLE_ID for role in interaction.user.roles)
-
-
-for institute_command in bot.tree.get_commands():
-    if institute_command.name == "register":
-        institute_command.add_check(register_role_check)
-    elif institute_command.name in {"progress", "profile"}:
-        # These two commands are available to everyone.
-        pass
-    else:
-        institute_command.add_check(trainer_role_check)
-
-
-@bot.tree.error
-async def institute_command_error(
-    interaction: discord.Interaction,
-    error: app_commands.AppCommandError
-):
-    if isinstance(error, app_commands.CheckFailure):
-        command_name = interaction.command.name if interaction.command else "unknown"
-
-        if command_name == "register":
-            description = (
-                f"You must hold <@&{STAFF_REGISTER_ROLE_ID}> "
-                "to use the `/register` command."
-            )
-        else:
-            description = (
-                f"You must hold <@&{TRAINER_ROLE_ID}> "
-                "to use this Institute staff command."
-            )
-
-        embed = base_embed(f"{I4} Permission Denied", description)
-
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-
-    print(f"Application command error: {type(error).__name__}: {error}")
-
-    embed = base_embed(
-        f"{I4} Command Error",
-        "An unexpected error occurred while running this command."
-    )
-
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-    except Exception:
-        pass
 
 
 
